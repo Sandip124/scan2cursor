@@ -53,6 +53,7 @@ const BRIDGE_JS: &str = include_str!("../public/bridge.js");
 const BARCODE_DETECTOR_JS: &str = include_str!("../public/vendor/barcode-detector.js");
 const ZXING_WASM: &[u8] = include_bytes!("../public/vendor/zxing_reader.wasm");
 const SCAN_WORKER_JS: &str = include_str!("../public/scan-worker.js");
+const SW_JS: &str = include_str!("../public/sw.js");
 const LOGO_SVG: &str = include_str!("../public/logo.svg");
 const ICON_PNG: &[u8] = include_bytes!("../public/icon-180.png");
 const ICON_192_PNG: &[u8] = include_bytes!("../public/icon-192.png");
@@ -1112,6 +1113,7 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         .route("/vendor/barcode-detector.js", get(|| async { asset("text/javascript; charset=utf-8", BARCODE_DETECTOR_JS) }))
         .route("/vendor/zxing_reader.wasm", get(|| async { asset("application/wasm", ZXING_WASM) }))
         .route("/scan-worker.js", get(|| async { asset("text/javascript; charset=utf-8", SCAN_WORKER_JS) }))
+        .route("/sw.js", get(|| async { asset("text/javascript; charset=utf-8", SW_JS) }))
         .route("/icon-192.png", get(|| async { asset("image/png", ICON_192_PNG) }))
         .route("/icon-512.png", get(|| async { asset("image/png", ICON_512_PNG) }))
         .route("/manifest.webmanifest", get(manifest))

@@ -52,6 +52,24 @@ Install app / Add to Home screen). It then opens full screen like an app, with t
 On an iPhone the home-screen app pairs once more on its first launch (it keeps its own storage),
 using the QR code that is current at that moment.
 
+**Pairing inside the scanner page.** Whenever the scanner page is open but the phone is not paired
+(first launch of the home-screen app, removed on the computer, QR code changed), the status light
+blinks amber, the button reads **PAIR**, and the camera looks for the QR code on the computer. Point
+it at the code: the phone pairs and switches to the barcode scanner. No camera app and no link to
+open. If the camera does not start by itself, tap **PAIR** once to allow it.
+
+**When the internet address changes.** The free **From anywhere** address is new every time the
+server or the computer restarts. A home-screen app installed from that link keeps a copy of itself
+on the phone, so it still opens. It then shows "Computer not reachable": tap **SCAN** and point at
+the **From anywhere** QR code on the computer. The app connects to the new address and stays paired;
+no reinstall. (An app installed before this version has no saved copy: remove it and install it once
+more from the current QR code.)
+
+Both pages follow the device's light or dark theme.
+
+Under each QR code the pairing page shows its link on one line (scroll sideways, or **Copy**), for a phone that cannot scan the
+code. Treat them like the QR codes: anyone with a link can pair a phone.
+
 ### The scanner page on the phone
 
 - **Top bar:** the Scan2Cursor logo, a status dot with text (green "ready" when scans will be
@@ -171,7 +189,7 @@ settings ("DHCP reservation").
 | Typed into the wrong window | It types wherever the cursor is. Click into the right field first |
 | Phone shows "desktop not connected" | The server restarted; wait a second, it reconnects by itself |
 | Internet QR code stuck on "Connecting…" | Computer online? `./scan2cursor tunnel status`; see the log. Some office networks block Cloudflare Tunnel |
-| Internet link stopped working | The address changes when the server restarts. Scan the new "From anywhere" QR code |
+| Internet link stopped working | The address changes when the server restarts. In the home-screen app: tap **SCAN** and point at the new "From anywhere" QR code. In a browser tab: scan the new QR code with the camera |
 | A phone should no longer have access | Click **Remove** next to it on the pairing page |
 | Someone else may have the link | `./scan2cursor new-token`, then pair your phones again |
 

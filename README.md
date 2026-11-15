@@ -43,6 +43,11 @@ Accessibility. Without it the program cannot type.
    code and the page on the computer have no warning.
 4. Tap **SCAN** and point at a barcode.
 
+After that first time, pairing happens inside the scanner page: whenever the phone is not paired
+(removed, new QR code, home-screen app opened for the first time), it opens its camera and reads
+the QR code on the computer by itself. If the **From anywhere** address changed (it does on every
+restart), tap **SCAN** in the installed app and point at the new QR code: it reconnects, still paired. Under each QR code the pairing page shows its link, with a **Copy** button.
+
 ## Remove a phone
 
 Click **Remove** next to it on the pairing page. That phone is disconnected and its link stops
