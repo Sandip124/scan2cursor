@@ -10,16 +10,21 @@
 <style>
   html,body{height:100%}
   body{margin:0;font:16px system-ui;background:#111;color:#fff;display:flex;flex-direction:column}
-  #top{padding:.7rem 1rem;display:flex;align-items:center;gap:.5rem;font-size:.9rem;color:#aaa}
-  #dot{width:10px;height:10px;border-radius:50%;background:#e44}
+  #top{padding:calc(.6rem + env(safe-area-inset-top)) 1rem .6rem;display:flex;align-items:center;gap:.5rem;font-size:.9rem;color:#aaa}
+  #logo{width:32px;height:32px;border-radius:8px;margin-right:.2rem}
+  #dot{width:10px;height:10px;border-radius:50%;background:#e44;flex:none}
   #dot.ok{background:#3d6}
-  #nm{margin-left:auto;background:none;border:1px solid #444;border-radius:8px;color:#ddd;font:inherit;padding:.25rem .6rem;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* How this phone reaches the computer: Wi-Fi or internet tunnel. Icon only. */
+  #via{margin-left:auto;display:flex;flex:none}
+  #via svg{width:22px;height:22px}
+  #nm{background:none;border:1px solid #444;border-radius:8px;color:#ddd;font:inherit;padding:.25rem .6rem;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #reader{width:100%}
   #last{flex:1;display:flex;align-items:center;justify-content:center;padding:.5rem 1rem;font:1.3rem ui-monospace,monospace;word-break:break-all;text-align:center}
-  #scan{margin:0 1rem calc(1rem + env(safe-area-inset-bottom));padding:1.4rem;font-size:1.4rem;font-weight:600;border:0;border-radius:16px;background:#3d6;color:#000;touch-action:manipulation}
+  /* Raised from the bottom edge so the thumb reaches it comfortably while holding the phone. */
+  #scan{margin:0 1rem calc(14vh + env(safe-area-inset-bottom));padding:1.7rem 1.4rem;font-size:1.5rem;font-weight:600;border:0;border-radius:18px;background:#3d6;color:#000;touch-action:manipulation}
   #scan.armed{background:#fc3}
 </style>
-<div id="top"><span id="dot"></span><span id="st">connecting…</span><button id="nm" title="Rename this phone"></button></div>
+<div id="top"><img id="logo" src="/logo.svg" alt="Scan2Cursor"><span id="dot"></span><span id="st">connecting…</span><span id="via" role="img"></span><button id="nm" title="Rename this phone"></button></div>
 <div id="reader"></div>
 <div id="last"></div>
 <button id="scan">SCAN</button>
@@ -40,6 +45,14 @@ function tone(freq, ms, type = 'sine', vol = 0.4, at = 0) {
 const beepOk = () => tone(2000, 120);
 const beepErr = () => { tone(220, 180, 'square', 0.3); tone(220, 180, 'square', 0.3, 0.25); };
 const buzz = p => navigator.vibrate && navigator.vibrate(p);
+
+// Connection type icon: a plain network address means the same Wi-Fi; a host name means the internet tunnel.
+const viaWifi = /^(\d{1,3}\.){3}\d{1,3}$|^localhost$|^\[/.test(location.hostname);
+$('via').innerHTML = viaWifi
+  ? '<svg viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M2.5 9.2a14 14 0 0 1 19 0"/><path d="M5.8 12.7a9 9 0 0 1 12.4 0"/><path d="M9 16.1a4.5 4.5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.4" fill="#ddd" stroke="none"/></svg>'
+  : '<svg viewBox="0 0 24 24" fill="#ddd" aria-hidden="true"><path d="M7 19h10.5a4.5 4.5 0 0 0 .7-8.95A6.5 6.5 0 0 0 5.6 9.3 4.9 4.9 0 0 0 7 19z"/></svg>';
+$('via').setAttribute('aria-label', viaWifi ? 'Connected over Wi-Fi' : 'Connected over the internet');
+$('via').title = viaWifi ? 'Connected over Wi-Fi' : 'Connected over the internet';
 
 let online = false, desktops = 0, unpaired = false;
 function showStatus() {

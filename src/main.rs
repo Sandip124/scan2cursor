@@ -537,7 +537,9 @@ struct App {
 }
 
 fn qr_data_url(text: &str) -> String {
-    let svg = qrcode::QrCode::new(text.as_bytes())
+    // Highest error correction (about 30% of the code may be covered): the pairing page puts an icon
+    // in the middle.
+    let svg = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::H)
         .map(|q| q.render::<qrcode::render::svg::Color>().min_dimensions(260, 260).build())
         .unwrap_or_default();
     format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(svg))

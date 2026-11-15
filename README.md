@@ -32,7 +32,8 @@ Accessibility. Without it the program cannot type.
 ## Pair a phone
 
 1. Open <http://localhost:8443/> on the computer.
-2. Scan the QR code with the phone's camera and open the link.
+2. Scan the QR code with the phone's camera and open the link. Use the **Same Wi-Fi** tab, or
+   **From anywhere** for a phone on mobile data (see below).
 3. On the **Same Wi-Fi** code, the phone warns once that the connection is not private. That is
    expected (the certificate is made by your computer); choose to continue. The **From anywhere**
    code and the page on the computer have no warning.
@@ -49,7 +50,7 @@ working; the QR code changes, and your other phones keep working without scannin
 ./scan2cursor tunnel on
 ```
 
-The pairing page then shows a second QR code under **From anywhere**. It goes through a free
+The pairing page's **From anywhere** tab then shows a QR code. It goes through a free
 Cloudflare tunnel: no account, no router settings. The address changes whenever the server
 restarts, so phones scan the new code after a reboot. Turn it off with `tunnel off`.
 

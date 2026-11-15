@@ -35,7 +35,13 @@ warning disappears by itself once it works. No restart is needed.
 ## 2. Pair a phone
 
 1. On the computer, open `http://localhost:8443/`.
-2. Scan the QR code on that page with the phone's camera and open the link.
+2. Pick a tab and scan its QR code with the phone's camera, then open the link:
+   - **Same Wi-Fi** (Wi-Fi icon in the code): phone on the same network as the computer. Fastest.
+   - **From anywhere** (cloud icon in the code): phone on mobile data or another Wi-Fi. Needs the
+     tunnel turned on, see [Different networks](#different-networks).
+
+   The icon in the middle does not stop the code from scanning. `http://localhost:8443/#net`
+   opens straight on the **From anywhere** tab.
 3. On the **Same Wi-Fi** code, the phone warns once that the connection is not private. This is
    expected: the certificate is made by this computer. Choose *Advanced → Proceed* (Android) or
    *Show details → visit this website* (iPhone). See [Certificate warning](#certificate-warning).
@@ -43,12 +49,21 @@ warning disappears by itself once it works. No restart is needed.
 
 Tip: add the page to the phone's home screen to open it like an app next time.
 
+### The scanner page on the phone
+
+- **Top bar:** the Scan2Cursor logo, a status dot with text (green "ready" when scans will be
+  typed), an icon for how the phone is connected (Wi-Fi symbol = same Wi-Fi, cloud = internet
+  tunnel), and the phone's name.
+- **SCAN button:** tap it, then point at a barcode. It sits a little above the bottom edge so the
+  thumb reaches it easily. Tap again to cancel.
+- **Result line:** `✓` and the code when it was typed on the computer; `✗` with the reason when not.
+
 ### Several phones
 
 Each phone scans the same QR code. The pairing page lists every paired phone: connected ones with
 their address and scan count, and offline ones with when they were last seen.
 
-To tell phones apart, tap the name in the top-right corner of the scanner page on the phone (e.g.
+To tell phones apart, tap the name at the right of the top bar on the phone's scanner page (e.g.
 "iPhone · Safari") and type a name such as "Counter 2". The phone remembers it.
 
 ### Remove a phone
@@ -193,7 +208,8 @@ Cloudflare's official GitHub releases). Already have it installed (e.g. `brew in
 Then that one is used. The server restarts and gets an address like
 `https://calm-river-1234.trycloudflare.com`.
 
-The pairing page now shows a second QR code, **From anywhere**. Scan it with a phone on any network.
+The pairing page's **From anywhere** tab now shows a QR code (with a cloud icon in the middle).
+Scan it with a phone on any network.
 It uses a normal certificate, so there is no "not private" warning.
 
 Turn it off again with `./scan2cursor tunnel off`.
