@@ -56,12 +56,36 @@ Tip: add the page to the phone's home screen to open it like an app next time.
   tunnel), and the phone's name.
 - **SCAN button:** tap it, then point at a barcode. It sits a little above the bottom edge so the
   thumb reaches it easily. Tap again to cancel.
-- **Result line:** `✓` and the code when it was typed on the computer; `✗` with the reason when not.
+- **Result line:** `✓` and the code when it was typed on the computer; `⏳` while it is waiting; `✗`
+  with the reason when it was refused.
+
+### No scan is lost
+
+Every scan is saved on the phone first and only removed once the computer confirms it was typed
+(or received by a web page using `bridge.js`). So the OK beep always means "it is in your software".
+
+| You hear / see | Meaning |
+|---|---|
+| High beep, `✓ code` | Typed on the computer |
+| Short soft tick, amber **N waiting** | Saved on the phone; it goes through by itself when the connection is back, or once the computer can type. No second beep when it does |
+| Low double buzz | Not kept: 500 scans are already waiting, or the code is not valid |
+
+- Phone offline (Wi-Fi gap, computer asleep): keep scanning. Scans are typed in scan order as soon
+  as the phone reconnects, wherever the cursor is at that moment.
+- Waiting more than 2 minutes: the phone asks first, **Send now** or **Discard**, so you can click
+  into the right field on the computer before a batch of codes is typed.
+- The page keeps the screen awake while it is open, and reconnects at once when the screen comes
+  back on or the network returns.
+- Waiting scans survive a closed browser or a restarted phone. The page itself needs the computer
+  to open, so after a restart they go out as soon as the page loads again.
+- Scanning the same barcode twice types it twice (on purpose: counting identical items). Only a
+  scan the phone re-sends after a dropped connection is skipped if it was already typed.
 
 ### Several phones
 
-Each phone scans the same QR code. The pairing page lists every paired phone: connected ones with
-their address and scan count, and offline ones with when they were last seen.
+Each phone scans the same QR code. The pairing page lists the phones connected right now, with
+their address and scan count. Paired phones that are offline stay paired (they reconnect by
+themselves, also when saved to the home screen) and are behind **Show N offline**.
 
 To tell phones apart, tap the name at the right of the top bar on the phone's scanner page (e.g.
 "iPhone · Safari") and type a name such as "Counter 2". The phone remembers it.
@@ -186,6 +210,10 @@ Set as environment variables before `./scan2cursor run` (or in the auto-start en
 | `HOST_IP` | auto | Force the network address used in the QR code |
 | `TUNNEL` | saved setting | `TUNNEL=1` / `TUNNEL=0`: tunnel on/off for this run only |
 | `DRY_RUN` | off | `DRY_RUN=1`: log scans instead of typing (testing) |
+| `TYPE` | on | `TYPE=0`: never type at the cursor; only web pages using `bridge.js` receive scans |
+
+When the same phone sends scans fast (or several phones at once), the computer types them one by
+one and waits 50 ms after each Enter before the next, so the app in front can keep up.
 
 ## 7. Uninstall
 

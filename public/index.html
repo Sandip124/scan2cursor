@@ -31,6 +31,7 @@
   #devices .offline .name{color:#777;font-weight:500}
   #devices button{align-self:center;padding:.3rem .6rem;font:inherit;font-size:.85rem;color:#b3261e;background:#fff;border:1px solid #e3b5b1;border-radius:8px;cursor:pointer}
   #devices button:hover{background:#fdecea}
+  .linkbtn{margin:.4rem 0;padding:.3rem;font:inherit;font-size:.9rem;color:#06c;background:none;border:0;cursor:pointer}
   small{color:#777}
 </style>
 <img class="logo" src="/logo.svg" width="64" height="64" alt="">
@@ -44,6 +45,7 @@
 <small id="blocked" role="alert" hidden>Scans cannot be typed yet: this computer has not allowed it. On a Mac: System Settings → Privacy &amp; Security → Accessibility → switch on <b>Scan2Cursor</b>. It starts working by itself within a few seconds.</small>
 <h2>Devices (<span id="count">0 connected</span>)</h2>
 <ul id="devices"><li class="empty">No phones paired yet</li></ul>
+<button id="offline" class="linkbtn" hidden></button>
 <script>
 // Tabs: one QR code at a time. The last choice is remembered.
 const tabs = [...document.querySelectorAll('.tabs [role=tab]')];
@@ -100,12 +102,19 @@ selectTab(location.hash.slice(1) || savedTab);   // http://localhost:8443/#net o
     if (!confirm(`Remove "${d.name}"?\n\nIt is disconnected and can no longer scan. To use it again, scan the QR code with it.\nThe QR code changes; your other phones keep working.`)) return;
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'remove', id: d.id }));
   }
+  // Offline phones stay paired (they reconnect by themselves) but are hidden unless asked for.
+  let showOffline = false;
+  const offBtn = document.getElementById('offline');
+  offBtn.onclick = () => { showOffline = !showOffline; render(); };
   function render() {
     const ul = document.getElementById('devices');
-    const online = devices.filter(d => d.online).length;
-    document.getElementById('count').textContent = `${online} connected` + (devices.length > online ? `, ${devices.length - online} offline` : '');
-    if (!devices.length) return ul.replaceChildren(el('li', 'empty', 'No phones paired yet'));
-    ul.replaceChildren(...devices.map(d => {
+    const online = devices.filter(d => d.online).length, offline = devices.length - online;
+    document.getElementById('count').textContent = `${online} connected`;
+    offBtn.hidden = !offline;
+    offBtn.textContent = showOffline ? `Hide ${offline} offline` : `Show ${offline} offline`;
+    const shown = devices.filter(d => d.online || showOffline);
+    if (!shown.length) return ul.replaceChildren(el('li', 'empty', devices.length ? 'No phones connected right now' : 'No phones paired yet'));
+    ul.replaceChildren(...shown.map(d => {
       const li = document.createElement('li');
       if (!d.online) li.className = 'offline';
       const scans = `${d.scans} scan${d.scans === 1 ? '' : 's'}${d.lastScan ? ', last ' + ago(d.lastScan) : ''}`;

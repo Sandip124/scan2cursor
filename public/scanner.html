@@ -15,7 +15,15 @@
   #dot{width:10px;height:10px;border-radius:50%;background:#e44;flex:none}
   #dot.ok{background:#3d6}
   /* How this phone reaches the computer: Wi-Fi or internet tunnel. Icon only. */
+  #q{color:#fc3;font-weight:600;white-space:nowrap}
   #via{margin-left:auto;display:flex;flex:none}
+  #hold{margin:0 1rem .6rem;padding:.7rem .8rem;background:#3a2f00;color:#ffe08a;border-radius:12px;font-size:.95rem}
+  #hold[hidden]{display:none}
+  #hold .actions{display:flex;gap:.5rem;margin-top:.6rem}
+  #hold button{flex:1;padding:.6rem;font:inherit;font-weight:600;border:0;border-radius:10px}
+  #send{background:#fc3;color:#000}
+  #discard{background:#5a4a10;color:#ffe08a}
+  #send[hidden]{display:none}
   #via svg{width:22px;height:22px}
   #nm{background:none;border:1px solid #444;border-radius:8px;color:#ddd;font:inherit;padding:.25rem .6rem;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #reader{width:100%}
@@ -24,7 +32,8 @@
   #scan{margin:0 1rem calc(14vh + env(safe-area-inset-bottom));padding:1.7rem 1.4rem;font-size:1.5rem;font-weight:600;border:0;border-radius:18px;background:#3d6;color:#000;touch-action:manipulation}
   #scan.armed{background:#fc3}
 </style>
-<div id="top"><img id="logo" src="/logo.svg" alt="Scan2Cursor"><span id="dot"></span><span id="st">connecting…</span><span id="via" role="img"></span><button id="nm" title="Rename this phone"></button></div>
+<div id="top"><img id="logo" src="/logo.svg" alt="Scan2Cursor"><span id="dot"></span><span id="st">connecting…</span><span id="q" hidden></span><span id="via" role="img"></span><button id="nm" title="Rename this phone"></button></div>
+<div id="hold" hidden><span id="holdtext"></span><span class="actions"><button id="send">Send now</button><button id="discard">Discard</button></span></div>
 <div id="reader"></div>
 <div id="last"></div>
 <button id="scan">SCAN</button>
@@ -44,6 +53,7 @@ function tone(freq, ms, type = 'sine', vol = 0.4, at = 0) {
 }
 const beepOk = () => tone(2000, 120);
 const beepErr = () => { tone(220, 180, 'square', 0.3); tone(220, 180, 'square', 0.3, 0.25); };
+const tick = () => tone(900, 40, 'sine', 0.25); // "saved, will go through"
 const buzz = p => navigator.vibrate && navigator.vibrate(p);
 
 // Connection type icon: a plain network address means the same Wi-Fi; a host name means the internet tunnel.
@@ -72,24 +82,111 @@ $('nm').onclick = () => {
   if (n === null) return;
   myName = n.trim().slice(0, 40);
   try { localStorage.setItem('bbName', myName); } catch {}
-  ws.close(); // reconnects with the new name
+  if (ws) ws.close(); // reconnects with the new name
 };
+
+// ---------- Waiting scans ----------
+// Every scan is saved here first and stays until the computer confirms it was typed (or received by a
+// bridge.js page). Saved in browser storage, so a reload, a locked screen or a closed browser loses nothing.
+const MAX_WAITING = 500;           // more than this: new scans are refused
+const AUTO_SEND_MS = 2 * 60 * 1000; // older waiting scans are only sent after the worker taps "Send now"
+const RETRY_MS = 2000;             // computer reachable but cannot type yet: try again after this
+const load = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+let queue = load('s2cQueue', []);   // [{id, code, format, at}] in scan order
+let seq = load('s2cSeq', 0);        // scan numbers, unique per phone
+let hold = load('s2cHold', false);  // waiting scans need the worker's OK before they are sent
+let inFlight = 0;                   // queue[0 .. inFlight-1] are sent on this connection, not yet confirmed
+let paused = false, retryTimer = null;
+let approvedUpTo = 0;               // scans up to this id were approved with "Send now", whatever their age
+const feedback = new Map();         // scan id -> { timer, saidWaiting }
+const saveQueue = () => save('s2cQueue', queue);
+function setHold(v) { hold = v; save('s2cHold', v); showQueue(); }
+
+function showQueue() {
+  const n = queue.length;
+  $('q').textContent = n ? `${n} waiting` : '';
+  $('q').hidden = !n;
+  const bar = $('hold');
+  if (!n || (!hold && !unpaired)) { bar.hidden = true; return; }
+  bar.hidden = false;
+  const since = new Date(queue[0].at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  $('holdtext').textContent = unpaired
+    ? `${n} scan${n === 1 ? '' : 's'} not sent. Scan the QR code on the computer again to connect.`
+    : `${n} scan${n === 1 ? '' : 's'} waiting since ${since}. Click into the right field on the computer, then send.`;
+  $('send').hidden = unpaired;
+}
+$('send').onclick = () => { approvedUpTo = queue.length ? queue[queue.length - 1].id : 0; setHold(false); pump(); };
+$('discard').onclick = () => {
+  if (!confirm(`Discard ${queue.length} waiting scan${queue.length === 1 ? '' : 's'}? They will not be typed.`)) return;
+  queue = []; inFlight = 0; saveQueue(); setHold(false);
+};
+
+// Send everything not yet in flight, in order, without waiting for confirmations.
+function pump() {
+  if (!ws || ws.readyState !== 1 || unpaired || hold || paused) return;
+  if (inFlight === 0 && queue.length && queue[0].id > approvedUpTo && Date.now() - queue[0].at > AUTO_SEND_MS) return setHold(true);
+  while (inFlight < queue.length) ws.send(JSON.stringify({ type: 'scan', ...queue[inFlight++] }));
+}
+
+function addScan(code, format) {
+  if (queue.length >= MAX_WAITING) {
+    beepErr(); buzz([200, 100, 200]);
+    $('last').textContent = `✗ ${MAX_WAITING} scans already waiting. Reconnect to the computer first.`;
+    return;
+  }
+  const s = { id: ++seq, code, format, at: Date.now() };
+  save('s2cSeq', seq);
+  queue.push(s); saveQueue();
+  $('last').textContent = '⏳ ' + code;
+  // Not confirmed quickly (offline, slow network, or computer cannot type yet): say "saved" once.
+  const fb = { saidWaiting: false, timer: null };
+  const sayWaiting = () => { if (!fb.saidWaiting && queue.some(x => x.id === s.id)) { fb.saidWaiting = true; tick(); buzz(30); } showQueue(); };
+  feedback.set(s.id, fb);
+  if (!ws || ws.readyState !== 1 || hold || unpaired) sayWaiting();
+  else fb.timer = setTimeout(sayWaiting, 800);
+  showQueue();
+  pump();
+}
+
+function onAck(m) {
+  const fb = feedback.get(m.id);
+  if (m.delivered || m.rejected) {
+    const i = queue.findIndex(x => x.id === m.id);
+    if (i >= 0) { queue.splice(i, 1); if (i < inFlight) inFlight--; saveQueue(); }
+    if (fb) { clearTimeout(fb.timer); feedback.delete(m.id); }
+    if (m.rejected) { beepErr(); buzz([200, 100, 200]); $('last').textContent = '✗ not a valid code: ' + m.code; }
+    else if (!fb || !fb.saidWaiting) { beepOk(); buzz(80); $('last').textContent = '✓ ' + m.code; } // later deliveries are silent
+    return showQueue();
+  }
+  // Reachable but not typed (e.g. typing not allowed yet): stop, then resend from the oldest, in order.
+  if (fb && !fb.saidWaiting) { clearTimeout(fb.timer); fb.saidWaiting = true; tick(); buzz(30); }
+  paused = true; inFlight = 0;
+  if (!retryTimer) retryTimer = setTimeout(() => { retryTimer = null; paused = false; pump(); }, RETRY_MS);
+  showQueue();
+}
+
+// ---------- Connection ----------
+let reconnectTimer = null;
 function connect() {
+  clearTimeout(reconnectTimer);
   const name = myName ? '&name=' + encodeURIComponent(myName) : '';
   const key = myKey ? '&k=' + encodeURIComponent(myKey) : '';
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=phone&t=${encodeURIComponent(t)}${key}${name}`);
-  ws.onopen = () => { online = true; showStatus(); };
+  ws.onopen = () => { online = true; inFlight = 0; paused = false; showStatus(); pump(); };
   ws.onclose = e => {
-    online = false;
+    online = false; inFlight = 0;
     // 4403: removed on the computer. 4401: key unknown and the QR code has changed since.
     if (e.code === 4403 || e.code === 4401) {
       unpaired = true; myKey = '';
       try { localStorage.removeItem('bbKey'); } catch {}
+      if (queue.length) setHold(true); // after pairing again, the worker decides: send or discard
       $('last').textContent = (e.code === 4403 ? 'This phone was removed on the computer.' : 'This phone is not paired with the computer.')
         + ' Scan the QR code on the computer again to connect.';
+      showQueue();
       return showStatus(); // do not keep retrying
     }
-    showStatus(); setTimeout(connect, 1000);
+    showStatus(); reconnectTimer = setTimeout(connect, 1000);
   };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
@@ -98,12 +195,22 @@ function connect() {
       if (m.key) { myKey = m.key; try { localStorage.setItem('bbKey', myKey); } catch {} }
     }
     if (m.type === 'status') { desktops = m.desktops; showStatus(); }
-    if (m.type === 'ack') {
-      if (m.delivered) { beepOk(); buzz(80); $('last').textContent = '✓ ' + m.code; }
-      else { beepErr(); buzz([200, 100, 200]); $('last').textContent = '✗ not typed: check the computer'; }
-    }
+    if (m.type === 'ack') onAck(m);
   };
 }
+// Reconnect at once when the screen comes back on or the network returns, instead of waiting.
+function reconnectNow() { if (!unpaired && (!ws || ws.readyState > 1)) connect(); }
+window.addEventListener('online', reconnectNow);
+
+// Keep the screen awake while this page is open and in front: a sleeping screen drops the connection.
+let wakeLock = null;
+async function keepAwake() {
+  if (wakeLock || document.visibilityState !== 'visible' || !('wakeLock' in navigator)) return;
+  try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } catch {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepAwake(); reconnectNow(); } });
+keepAwake();
+showQueue();
 connect();
 
 function disarm() { armed = false; clearTimeout(armTimer); $('scan').className = ''; $('scan').textContent = 'SCAN'; }
@@ -114,8 +221,7 @@ function arm() {
 function onDecode(code, result) {
   if (!armed) return;
   disarm();
-  if (ws.readyState !== 1) { beepErr(); if (!unpaired) $('last').textContent = '✗ offline'; return; }
-  ws.send(JSON.stringify({ type: 'scan', code, format: result?.result?.format?.formatName }));
+  addScan(code, result?.result?.format?.formatName);
 }
 
 $('scan').onclick = async () => {
@@ -135,6 +241,7 @@ $('scan').onclick = async () => {
     } catch (err) { started = false; $('last').textContent = 'Camera error: ' + err; return; }
   }
   actx.resume();
+  keepAwake();
   arm();
 };
 </script>

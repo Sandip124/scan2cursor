@@ -7,7 +7,7 @@
 //         scan2cursor tunnel on|off|status     reach this computer from any network
 //         scan2cursor new-token [--no-restart] make a new pairing token (restarts the server)
 // Env:    PORT (default 8443), HOST_IP (override LAN IP), ENTER=0 (no Enter after scan), TUNNEL=1/0,
-//         DRY_RUN=1 (log instead of typing), TOKEN (fixed token), BB_HOME (data folder; default: next to binary)
+//         DRY_RUN=1 (log instead of typing), TYPE=0 (never type; only bridge.js pages), TOKEN (fixed token), BB_HOME (data folder; default: next to binary)
 
 mod devices;
 mod tunnel;
@@ -54,6 +54,13 @@ const HTML5_QRCODE_JS: &str = include_str!("../public/vendor/html5-qrcode.min.js
 const LOGO_SVG: &str = include_str!("../public/logo.svg");
 const ICON_PNG: &[u8] = include_bytes!("../public/icon-180.png");
 const MAX_CODE_CHARS: usize = 512;
+// Fixed limits, so memory stays flat however long the server runs.
+const PEER_BUFFER: usize = 256; // messages waiting for one connection; a connection that stops reading is dropped
+const PHONE_INFLIGHT: usize = 600; // scans from one phone waiting to be typed (the phone keeps at most 500)
+const RECENT_PER_PHONE: usize = 500; // recent scan ids per phone, to skip scans re-sent after a dropped connection
+const TYPER_BUFFER: usize = 64; // scans waiting for the keyboard
+const BURST_PAUSE: Duration = Duration::from_millis(50); // after Enter, only when the next scan is already waiting
+const PAGE_CONFIRM_WAIT: Duration = Duration::from_secs(2); // how long to wait for a bridge.js page to confirm
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 // ---------- data folder, logging ----------
@@ -72,19 +79,37 @@ fn home_dir() -> PathBuf {
 }
 
 #[derive(Clone)]
-struct Logger(Arc<Mutex<Option<fs::File>>>);
+struct Logger(Arc<Mutex<LogFile>>);
+
+struct LogFile {
+    dir: PathBuf,
+    file: Option<fs::File>,
+    size: u64,
+}
+
+impl LogFile {
+    /// Keep the log small: once it passes 1 MB, it becomes .old (replacing the previous one).
+    fn roll_if_big(&mut self) {
+        if self.size <= MAX_LOG_BYTES {
+            return;
+        }
+        let path = self.dir.join("scan2cursor.log");
+        let _ = fs::rename(&path, self.dir.join("scan2cursor.log.old"));
+        self.file = fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        self.size = 0;
+    }
+}
 
 impl Logger {
     fn open(home: &Path) -> Self {
         let dir = home.join("logs");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("scan2cursor.log");
-        // Keep the log small: roll over to .old once it passes 1 MB.
-        if fs::metadata(&path).map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false) {
-            let _ = fs::rename(&path, dir.join("scan2cursor.log.old"));
-        }
+        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let file = fs::OpenOptions::new().create(true).append(true).open(path).ok();
-        Logger(Arc::new(Mutex::new(file)))
+        let mut lf = LogFile { dir, file, size };
+        lf.roll_if_big();
+        Logger(Arc::new(Mutex::new(lf)))
     }
 
     fn log(&self, msg: &str) {
@@ -93,9 +118,13 @@ impl Logger {
             .unwrap_or_default();
         let line = format!("{ts} {msg}");
         eprintln!("{line}");
-        if let Some(f) = self.0.lock().unwrap().as_mut() {
-            let _ = writeln!(f, "{line}");
+        let mut lf = self.0.lock().unwrap();
+        if let Some(f) = lf.file.as_mut() {
+            if writeln!(f, "{line}").is_ok() {
+                lf.size += line.len() as u64 + 1;
+            }
         }
+        lf.roll_if_big();
     }
 }
 
@@ -404,16 +433,24 @@ fn tls_acceptor(cert_pem: &str, key_pem: &str) -> Result<TlsAcceptor, Box<dyn st
 // ---------- typing at the cursor ----------
 
 /// One long-lived keyboard handle on its own thread: no process is spawned per scan.
+/// A scan for the keyboard. `done` gets true once it was typed (code + Enter), false if it could not be.
+struct TypeJob {
+    code: String,
+    done: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// One long-lived keyboard handle on its own thread: no process is spawned per scan. Scans are typed
+/// one at a time, each as a whole (code + Enter), so scans from several phones never mix.
 /// `ready` tells the rest of the server whether typing actually works (macOS may not allow it yet).
-fn start_typer(press_enter: bool, dry_run: bool, log: Logger, ready: Arc<AtomicBool>) -> std_mpsc::Sender<String> {
+fn start_typer(press_enter: bool, dry_run: bool, no_typing: bool, log: Logger, ready: Arc<AtomicBool>) -> std_mpsc::SyncSender<TypeJob> {
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-    let (tx, rx) = std_mpsc::channel::<String>();
+    let (tx, rx) = std_mpsc::sync_channel::<TypeJob>(TYPER_BUFFER);
     std::thread::spawn(move || {
         let mut kb: Option<Enigo> = None;
         let mut asked = false; // macOS: show the permission prompt once, not on every scan
         let mut reported = false; // log "not available" once until it works again
         let mut connect = |kb: &mut Option<Enigo>| {
-            if kb.is_some() || dry_run {
+            if kb.is_some() || dry_run || no_typing {
                 return;
             }
             let settings = Settings { open_prompt_to_get_permissions: !asked, ..Settings::default() };
@@ -434,34 +471,50 @@ fn start_typer(press_enter: bool, dry_run: bool, log: Logger, ready: Arc<AtomicB
             }
         };
         connect(&mut kb); // ask for permission at startup, not on the first scan
+        let mut next: Option<TypeJob> = None;
         loop {
-            ready.store(kb.is_some() || dry_run, Ordering::Relaxed);
-            // While the keyboard is not available, look again every 2 s, so it starts working by
-            // itself once the permission is switched on.
-            let raw = match rx.recv_timeout(Duration::from_secs(2)) {
-                Ok(raw) => raw,
-                Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                    connect(&mut kb);
-                    continue;
-                }
-                Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+            ready.store(!no_typing && (kb.is_some() || dry_run), Ordering::Relaxed);
+            let job = match next.take() {
+                Some(j) => j,
+                // While the keyboard is not available, look again every 2 s, so it starts working by
+                // itself once the permission is switched on.
+                None => match rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(j) => j,
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                        connect(&mut kb);
+                        continue;
+                    }
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                },
             };
-            let text: String = raw.chars().filter(|c| !c.is_control()).collect();
-            if text.is_empty() {
-                continue;
-            }
-            if dry_run {
+            let text: String = job.code.chars().filter(|c| !c.is_control()).collect();
+            let typed = if text.is_empty() {
+                true // nothing printable to type
+            } else if dry_run {
                 log.log(&format!("[dry-run] type {text:?}{}", if press_enter { " + Enter" } else { "" }));
-                continue;
-            }
-            connect(&mut kb);
-            let Some(e) = kb.as_mut() else { continue };
-            let res = e
-                .text(&text)
-                .and_then(|_| if press_enter { e.key(Key::Return, Direction::Click) } else { Ok(()) });
-            if let Err(err) = res {
-                log.log(&format!("type failed: {err}"));
-                kb = None; // reconnect on next scan
+                true
+            } else {
+                connect(&mut kb);
+                match kb.as_mut() {
+                    None => false,
+                    Some(e) => match e.text(&text).and_then(|_| if press_enter { e.key(Key::Return, Direction::Click) } else { Ok(()) }) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            log.log(&format!("type failed: {err}"));
+                            kb = None; // reconnect on next scan
+                            false
+                        }
+                    },
+                }
+            };
+            let _ = job.done.send(typed);
+            // Burst (queued scans, several phones): give the app in front a moment to handle the
+            // Enter before the next code arrives. A single scan is never delayed.
+            if let Ok(j) = rx.try_recv() {
+                if typed && !dry_run {
+                    std::thread::sleep(BURST_PAUSE);
+                }
+                next = Some(j);
             }
         }
     });
@@ -479,7 +532,8 @@ enum Role {
 
 struct Peer {
     role: Role,
-    tx: mpsc::UnboundedSender<Message>,
+    tx: mpsc::Sender<Message>,           // bounded (PEER_BUFFER)
+    kick: Arc<tokio::sync::Notify>,      // tells the connection to close (stuck, or phone removed)
     name: String,
     ip: String,
     since: i64, // ms since epoch
@@ -532,8 +586,31 @@ struct App {
     devices: Mutex<devices::Store>,      // paired phones and their keys
     peers: Mutex<HashMap<u64, Peer>>,    // open connections
     next_id: AtomicU64,
-    typer: std_mpsc::Sender<String>,
+    typer: std_mpsc::SyncSender<TypeJob>,
     typer_ready: Arc<AtomicBool>, // false while the OS does not let us type (macOS Accessibility)
+    next_scan: AtomicU64,         // ids for scans sent to bridge.js pages
+    page_waits: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<()>>>, // pages' confirmations awaited
+    recent: Mutex<HashMap<String, Recent>>, // per paired phone: ids of scans already delivered
+}
+
+/// The last RECENT_PER_PHONE scan ids delivered from one phone (fixed size).
+#[derive(Default)]
+struct Recent {
+    order: std::collections::VecDeque<u64>,
+    set: std::collections::HashSet<u64>,
+}
+
+impl Recent {
+    fn add(&mut self, id: u64) {
+        if self.set.insert(id) {
+            self.order.push_back(id);
+            if self.order.len() > RECENT_PER_PHONE {
+                if let Some(old) = self.order.pop_front() {
+                    self.set.remove(&old);
+                }
+            }
+        }
+    }
 }
 
 fn qr_data_url(text: &str) -> String {
@@ -578,13 +655,15 @@ impl App {
         if !self.devices.lock().unwrap().remove(id) {
             return;
         }
+        self.recent.lock().unwrap().remove(id);
         {
             let mut peers = self.peers.lock().unwrap();
             let open: Vec<u64> = peers.iter().filter(|(_, p)| p.device.as_deref() == Some(id)).map(|(k, _)| *k).collect();
             for k in open {
                 // Dropped from the list right away, so nothing more from it is accepted.
                 if let Some(p) = peers.remove(&k) {
-                    let _ = p.tx.send(Message::Close(Some(CloseFrame { code: CLOSE_REMOVED, reason: "removed".into() })));
+                    let _ = p.tx.try_send(Message::Close(Some(CloseFrame { code: CLOSE_REMOVED, reason: "removed".into() })));
+                    p.kick.notify_one();
                 }
             }
         }
@@ -605,13 +684,25 @@ impl App {
         }
     }
 
+    /// Send to every connection with one of these roles. A connection whose buffer is full has stopped
+    /// reading (frozen tab, dead network): it is dropped instead of buffering without limit.
     fn send_to(&self, roles: &[Role], msg: &str) -> usize {
-        let peers = self.peers.lock().unwrap();
-        peers
-            .values()
-            .filter(|p| roles.contains(&p.role))
-            .filter(|p| p.tx.send(Message::Text(msg.into())).is_ok())
-            .count()
+        let mut peers = self.peers.lock().unwrap();
+        let mut sent = 0;
+        let mut stuck = Vec::new();
+        for (k, p) in peers.iter().filter(|(_, p)| roles.contains(&p.role)) {
+            match p.tx.try_send(Message::Text(msg.into())) {
+                Ok(()) => sent += 1,
+                Err(mpsc::error::TrySendError::Full(_)) => stuck.push(*k),
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        for k in stuck {
+            if let Some(p) = peers.remove(&k) {
+                p.kick.notify_one();
+            }
+        }
+        sent
     }
 
     fn broadcast_status(&self) {
@@ -648,30 +739,93 @@ impl App {
         self.send_to(&[Role::Monitor], &msg.to_string());
     }
 
-    fn on_scan(&self, id: u64, raw: &str, reply: &mpsc::UnboundedSender<Message>) {
-        if !self.peers.lock().unwrap().contains_key(&id) {
-            return; // removed while still connected
+    /// Deliver one scan: type it at the cursor, and send it to bridge.js pages. True only when it was
+    /// typed, or a page confirmed it received it.
+    async fn deliver(&self, code: &str, format: Option<&str>) -> bool {
+        let scan_id = self.next_scan.fetch_add(1, Ordering::Relaxed);
+        let (page_tx, page_rx) = tokio::sync::oneshot::channel();
+        self.page_waits.lock().unwrap().insert(scan_id, page_tx);
+        let out = serde_json::json!({ "type": "scan", "id": scan_id, "code": code, "format": format, "ts": now_ms() });
+        let pages = self.send_to(&[Role::Desktop], &out.to_string());
+
+        let mut typed = false;
+        if self.typer_ready.load(Ordering::Relaxed) {
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            if self.typer.try_send(TypeJob { code: code.to_string(), done: done_tx }).is_ok() {
+                typed = done_rx.await.unwrap_or(false);
+            }
         }
+        let confirmed = typed || (pages > 0 && matches!(tokio::time::timeout(PAGE_CONFIRM_WAIT, page_rx).await, Ok(Ok(()))));
+        self.page_waits.lock().unwrap().remove(&scan_id);
+        confirmed
+    }
+
+    /// A bridge.js page confirms it received a scan.
+    fn on_page(&self, raw: &str) {
         let Ok(m) = serde_json::from_str::<serde_json::Value>(raw) else { return };
-        let Some(code) = m["code"].as_str() else { return };
-        if m["type"] != "scan" || code.is_empty() || code.chars().count() > MAX_CODE_CHARS {
-            return;
+        if let ("got", Some(id)) = (m["type"].as_str().unwrap_or(""), m["id"].as_u64()) {
+            if let Some(w) = self.page_waits.lock().unwrap().remove(&id) {
+                let _ = w.send(());
+            }
         }
-        let ts = now_ms();
-        let out = serde_json::json!({ "type": "scan", "code": code, "format": m["format"].as_str(), "ts": ts });
-        let mut delivered = self.send_to(&[Role::Desktop], &out.to_string());
-        // Always hand it to the typer, but only report it as delivered if typing currently works,
-        // so the phone does not beep "OK" for a scan that never reached the cursor.
-        if self.typer.send(code.to_string()).is_ok() && self.typer_ready.load(Ordering::Relaxed) {
-            delivered += 1;
-        }
-        let ack = serde_json::json!({ "type": "ack", "code": code, "delivered": delivered });
-        let _ = reply.send(Message::Text(ack.to_string().into()));
-        if let Some(p) = self.peers.lock().unwrap().get_mut(&id) {
+    }
+
+    fn scan_done(&self, conn: u64) {
+        if let Some(p) = self.peers.lock().unwrap().get_mut(&conn) {
             p.scans += 1;
-            p.last_scan = Some(ts);
+            p.last_scan = Some(now_ms());
         }
-        self.broadcast_status(); // after the ack, so the scan itself is not delayed
+        self.broadcast_status();
+    }
+}
+
+/// Scans from one phone connection, handled strictly in order. The phone sends without waiting; each
+/// scan is confirmed only once delivered. If one cannot be typed, it and every later scan are refused
+/// until the phone sends that one again, so the phone's order is never broken.
+async fn phone_scans(app: Arc<App>, conn: u64, device: String, mut rx: mpsc::Receiver<serde_json::Value>, reply: mpsc::Sender<Message>) {
+    let mut blocked: Option<u64> = None;
+    let ack = |v: serde_json::Value| reply.try_send(Message::Text(v.to_string().into())).is_ok();
+    while let Some(m) = rx.recv().await {
+        if !app.peers.lock().unwrap().contains_key(&conn) {
+            return; // removed or dropped while scans were waiting
+        }
+        let code = m["code"].as_str().unwrap_or("");
+        let format = m["format"].as_str();
+        let Some(id) = m["id"].as_u64() else {
+            // Older phone page without scan ids: deliver once, no ordering or duplicate check.
+            if !code.is_empty() && code.chars().count() <= MAX_CODE_CHARS {
+                let ok = app.deliver(code, format).await;
+                if ok {
+                    app.scan_done(conn);
+                }
+                ack(serde_json::json!({ "type": "ack", "code": code, "delivered": u8::from(ok) }));
+            }
+            continue;
+        };
+        if code.is_empty() || code.chars().count() > MAX_CODE_CHARS {
+            ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": false, "rejected": true }));
+            continue;
+        }
+        if let Some(b) = blocked {
+            if id != b {
+                ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": false }));
+                continue;
+            }
+            blocked = None;
+        }
+        // Re-sent after a dropped connection, but already delivered: confirm without typing it again.
+        if app.recent.lock().unwrap().get(&device).is_some_and(|r| r.set.contains(&id)) {
+            ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": true }));
+            continue;
+        }
+        if app.deliver(code, format).await {
+            app.recent.lock().unwrap().entry(device.clone()).or_default().add(id);
+            ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": true }));
+            app.scan_done(conn);
+        } else {
+            blocked = Some(id);
+            ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": false }));
+        }
     }
 }
 
@@ -791,15 +945,16 @@ async fn ws(
 
 async fn client(app: Arc<App>, socket: WebSocket, role: Role, name: String, ip: String, device: Option<String>, new_key: Option<String>) {
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    let (tx, mut rx) = mpsc::channel::<Message>(PEER_BUFFER);
+    let kick = Arc::new(tokio::sync::Notify::new());
     let id = app.next_id.fetch_add(1, Ordering::Relaxed);
     // Tell the phone the name it is listed under and, when it was just paired, its key to keep.
-    let _ = tx.send(Message::Text(serde_json::json!({ "type": "hello", "name": name, "key": new_key }).to_string().into()));
-    let peer = Peer { role, tx: tx.clone(), name, ip, since: now_ms(), scans: 0, last_scan: None, device: device.clone() };
+    let _ = tx.try_send(Message::Text(serde_json::json!({ "type": "hello", "name": name, "key": new_key }).to_string().into()));
+    let peer = Peer { role, tx: tx.clone(), kick: kick.clone(), name, ip, since: now_ms(), scans: 0, last_scan: None, device: device.clone() };
     app.peers.lock().unwrap().insert(id, peer);
     app.broadcast_status();
 
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             let closing = matches!(m, Message::Close(_));
             if sink.send(m).await.is_err() || closing {
@@ -807,16 +962,39 @@ async fn client(app: Arc<App>, socket: WebSocket, role: Role, name: String, ip: 
             }
         }
     });
-    while let Some(Ok(msg)) = stream.next().await {
+    // A phone's scans go to their own task, handled in order without blocking this read loop.
+    let (scan_tx, scan_rx) = mpsc::channel::<serde_json::Value>(PHONE_INFLIGHT);
+    let scans = match (role, &device) {
+        (Role::Phone, Some(dev)) => Some(tokio::spawn(phone_scans(app.clone(), id, dev.clone(), scan_rx, tx.clone()))),
+        _ => None,
+    };
+    loop {
+        let msg = tokio::select! {
+            m = stream.next() => m,
+            _ = kick.notified() => break,
+        };
+        let Some(Ok(msg)) = msg else { break };
         let Message::Text(t) = &msg else { continue };
         match role {
-            Role::Phone => app.on_scan(id, t.as_str(), &tx),
+            Role::Phone => {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(t.as_str()) else { continue };
+                if v["type"] == "scan" && scan_tx.try_send(v).is_err() {
+                    break; // far more scans in flight than a phone ever keeps: drop the connection
+                }
+            }
             Role::Monitor => app.on_monitor(t.as_str()),
-            Role::Desktop => {}
+            Role::Desktop => app.on_page(t.as_str()),
         }
     }
+    if let Some(s) = scans {
+        s.abort();
+    }
     app.peers.lock().unwrap().remove(&id);
-    writer.abort();
+    drop(tx);
+    // Let a queued close message (e.g. "removed") go out, but never wait long on a stuck connection.
+    if tokio::time::timeout(Duration::from_secs(1), &mut writer).await.is_err() {
+        writer.abort();
+    }
     if let Some(dev) = device {
         let mut store = app.devices.lock().unwrap();
         if let Some(d) = store.get_mut(&dev) {
@@ -858,6 +1036,7 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let port = port();
     let press_enter = std::env::var("ENTER").map(|v| v != "0").unwrap_or(true);
     let dry_run = std::env::var("DRY_RUN").is_ok_and(|v| !v.is_empty());
+    let no_typing = std::env::var("TYPE").is_ok_and(|v| v == "0"); // only deliver to bridge.js pages
 
     let token = load_token(&home)?;
     let host = lan_ip();
@@ -876,8 +1055,11 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         devices: Mutex::new(devices::Store::load(&home)),
         peers: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(0),
-        typer: start_typer(press_enter, dry_run, log.clone(), typer_ready.clone()),
+        typer: start_typer(press_enter, dry_run, no_typing, log.clone(), typer_ready.clone()),
         typer_ready: typer_ready.clone(),
+        next_scan: AtomicU64::new(0),
+        page_waits: Mutex::new(HashMap::new()),
+        recent: Mutex::new(HashMap::new()),
     });
     app.refresh_pairing();
 

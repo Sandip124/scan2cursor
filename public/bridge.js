@@ -23,6 +23,8 @@
             else el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
           }
           onScan && onScan(m);
+          // Tell Scan2Cursor the code arrived, so the phone can confirm it (and keeps it queued otherwise).
+          if (m.id !== undefined && ws.readyState === 1) ws.send(JSON.stringify({ type: 'got', id: m.id }));
         };
         ws.onclose = () => { setTimeout(open, retry); retry = Math.min(retry * 2, 8000); };
       };
