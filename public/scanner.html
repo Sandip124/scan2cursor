@@ -7,6 +7,11 @@
 <meta name="theme-color" content="#111111">
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" id="manifest" href="/manifest.webmanifest">
+<script>
+  // "Add to Home Screen": the installed app opens this scanner link (with its pairing code).
+  document.getElementById('manifest').href = '/manifest.webmanifest?t=' + encodeURIComponent(new URLSearchParams(location.search).get('t') || '');
+</script>
 <style>
   html,body{height:100%}
   body{margin:0;font:16px system-ui;background:#111;color:#fff;display:flex;flex-direction:column}
@@ -26,7 +31,17 @@
   #send[hidden]{display:none}
   #via svg{width:22px;height:22px}
   #nm{background:none;border:1px solid #444;border-radius:8px;color:#ddd;font:inherit;padding:.25rem .6rem;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #reader{width:100%}
+  /* Camera view with the scan strip: only the strip is decoded (faster, fewer wrong reads). */
+  #reader{position:relative;width:100%;height:46vh;background:#000;overflow:hidden}
+  #cam{width:100%;height:100%;object-fit:cover;display:block}
+  #strip{position:absolute;left:7%;width:86%;top:34%;height:32%;border:2px solid rgba(255,255,255,.85);border-radius:12px;box-shadow:0 0 0 100vmax rgba(0,0,0,.35);pointer-events:none}
+  #reader.armed #strip{border-color:#fc3}
+  #camctl{position:absolute;right:.6rem;bottom:.6rem;display:flex;gap:.4rem}
+  #camctl button{min-width:2.6rem;padding:.45rem .6rem;font:inherit;font-size:.9rem;font-weight:600;color:#fff;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.35);border-radius:999px}
+  #camctl button.on{background:#fff;color:#000}
+  #zoom{display:flex;gap:.3rem}
+  #camctl [hidden]{display:none}
+  #camhint{position:absolute;inset:0;display:grid;place-items:center;color:#aaa;font-size:.95rem;text-align:center;padding:1rem}
   #last{flex:1;display:flex;align-items:center;justify-content:center;padding:.5rem 1rem;font:1.3rem ui-monospace,monospace;word-break:break-all;text-align:center}
   /* Raised from the bottom edge so the thumb reaches it comfortably while holding the phone. */
   #scan{margin:0 1rem calc(14vh + env(safe-area-inset-bottom));padding:1.7rem 1.4rem;font-size:1.5rem;font-weight:600;border:0;border-radius:18px;background:#3d6;color:#000;touch-action:manipulation}
@@ -34,15 +49,19 @@
 </style>
 <div id="top"><img id="logo" src="/logo.svg" alt="Scan2Cursor"><span id="dot"></span><span id="st">connecting…</span><span id="q" hidden></span><span id="via" role="img"></span><button id="nm" title="Rename this phone"></button></div>
 <div id="hold" hidden><span id="holdtext"></span><span class="actions"><button id="send">Send now</button><button id="discard">Discard</button></span></div>
-<div id="reader"></div>
+<div id="reader">
+  <video id="cam" playsinline muted></video>
+  <div id="camhint">Tap SCAN to start the camera</div>
+  <div id="strip"></div>
+  <div id="camctl"><span id="zoom" hidden></span><button id="torch" hidden aria-label="Torch">🔦</button></div>
+</div>
 <div id="last"></div>
 <button id="scan">SCAN</button>
-<script src="/vendor/html5-qrcode.js"></script>
 <script>
 // Works like a handheld scanner trigger: tap SCAN, the next barcode inside the box is read once, sent, and typed + Enter on the desktop.
 const t = new URLSearchParams(location.search).get('t') || '';
 const $ = id => document.getElementById(id);
-let ws, actx, started = false, armed = false, armTimer;
+let ws, actx, armed = false, armTimer;
 
 function tone(freq, ms, type = 'sine', vol = 0.4, at = 0) {
   if (!actx) return;
@@ -213,35 +232,136 @@ keepAwake();
 showQueue();
 connect();
 
-function disarm() { armed = false; clearTimeout(armTimer); $('scan').className = ''; $('scan').textContent = 'SCAN'; }
-function arm() {
-  armed = true; $('scan').className = 'armed'; $('scan').textContent = 'Scanning…'; $('last').textContent = '';
-  clearTimeout(armTimer); armTimer = setTimeout(disarm, 8000);
+// ---------- Camera ----------
+// Own camera handling: 1080p for thin 1D bars, continuous focus, torch and zoom where the phone allows,
+// and decoding in a background worker (scan-worker.js), only while armed.
+const video = $('cam');
+let stream = null, track = null, caps = {}, worker = null, busy = false, candidate = '', scanEngine = '';
+const isIPhone = /iPhone/.test(navigator.userAgent);
+
+async function startCamera() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+  });
+  track = stream.getVideoTracks()[0];
+  video.srcObject = stream;
+  await video.play();
+  $('camhint').hidden = true;
+  caps = (track.getCapabilities && track.getCapabilities()) || {};
+  if ((caps.focusMode || []).includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  setupControls();
+  if (!worker) {
+    const engineParam = new URLSearchParams(location.search).get('engine') === 'zxing' ? '?engine=zxing' : '';
+    worker = new Worker('/scan-worker.js' + engineParam);
+    worker.onmessage = onFrameResult;
+    worker.onerror = () => { busy = false; $('last').textContent = 'Scanner failed to load. Reload the page.'; };
+  }
 }
-function onDecode(code, result) {
+
+// Torch and zoom buttons only appear when this phone's browser supports them.
+function setupControls() {
+  $('torch').hidden = !caps.torch;
+  const box = $('zoom'), z = caps.zoom;
+  box.replaceChildren();
+  const levels = z ? [1, 2, 3].filter(l => l >= z.min && l <= z.max) : [];
+  box.hidden = levels.length < 2;
+  if (box.hidden) return;
+  for (const l of levels) {
+    const b = document.createElement('button');
+    b.textContent = l + '×'; b.dataset.level = l;
+    b.onclick = () => setZoom(l);
+    box.append(b);
+  }
+  // iPhone Pro main cameras cannot focus closer than about 9 cm: start at 2x, so the phone is held
+  // farther away, where it can focus, and the code still fills the strip.
+  setZoom(isIPhone && levels.includes(2) ? 2 : levels[0]);
+}
+function setZoom(level) {
+  track.applyConstraints({ advanced: [{ zoom: level }] }).catch(() => {});
+  for (const b of $('zoom').children) b.classList.toggle('on', +b.dataset.level === level);
+}
+let torchOn = false;
+$('torch').onclick = async () => {
+  torchOn = !torchOn;
+  try { await track.applyConstraints({ advanced: [{ torch: torchOn }] }); } catch { torchOn = false; }
+  $('torch').classList.toggle('on', torchOn);
+};
+// Tap to focus (Android browsers that support it); goes back to continuous focus after.
+video.addEventListener('click', e => {
+  if (!track || !(caps.focusMode || []).includes('single-shot')) return;
+  const r = video.getBoundingClientRect();
+  const point = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+  track.applyConstraints({ advanced: [{ pointsOfInterest: [point], focusMode: 'single-shot' }] })
+    .then(() => setTimeout(() => track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}), 1500))
+    .catch(() => {});
+});
+
+// The scan strip on screen, in camera pixels (the video is shown cropped to fill its box).
+function stripInVideo() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return null;
+  const ew = video.clientWidth, eh = video.clientHeight, s = $('strip');
+  const scale = Math.max(ew / vw, eh / vh);
+  const offX = (vw * scale - ew) / 2, offY = (vh * scale - eh) / 2;
+  const x = Math.max(0, Math.round((s.offsetLeft + offX) / scale)), y = Math.max(0, Math.round((s.offsetTop + offY) / scale));
+  return { x, y, w: Math.min(vw - x, Math.round(s.offsetWidth / scale)), h: Math.min(vh - y, Math.round(s.offsetHeight / scale)) };
+}
+
+function nextFrame() {
   if (!armed) return;
-  disarm();
-  addScan(code, result?.result?.format?.formatName);
+  if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(grab);
+  else setTimeout(grab, 40);
 }
+async function grab() {
+  if (!armed) return;
+  if (busy) return nextFrame(); // still decoding the previous frame: skip this one
+  const r = stripInVideo();
+  if (!r || r.w < 16 || r.h < 16) return nextFrame();
+  busy = true;
+  try {
+    const frame = await createImageBitmap(video, r.x, r.y, r.w, r.h);
+    worker.postMessage({ frame }, [frame]);
+  } catch { busy = false; }
+  nextFrame();
+}
+function onFrameResult(e) {
+  busy = false;
+  const { codes } = e.data;
+  scanEngine = e.data.engine || scanEngine; // which decoder is in use, for troubleshooting
+  if (!armed || !codes || !codes.length) return;
+  const c = codes[0];
+  // Accept a code only after two matching reads: a single blurry frame can misread a 1D barcode.
+  if (c.code !== candidate) { candidate = c.code; return; }
+  candidate = '';
+  disarm();
+  addScan(c.code, c.format);
+}
+
+function disarm() {
+  armed = false; clearTimeout(armTimer);
+  $('scan').className = ''; $('scan').textContent = 'SCAN'; $('reader').classList.remove('armed');
+}
+function arm() {
+  armed = true; candidate = '';
+  $('scan').className = 'armed'; $('scan').textContent = 'Scanning…'; $('reader').classList.add('armed'); $('last').textContent = '';
+  clearTimeout(armTimer); armTimer = setTimeout(disarm, 8000);
+  nextFrame();
+}
+// The browser stops the camera when the page goes to the background; it restarts on the next tap.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') disarm(); });
 
 $('scan').onclick = async () => {
   if (armed) return disarm();
-  if (!started) {
-    started = true;
-    actx = new (window.AudioContext || window.webkitAudioContext)();
-    const F = Html5QrcodeSupportedFormats;
-    const scanner = new Html5Qrcode('reader', {
-      formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.ITF, F.CODE_93, F.QR_CODE, F.DATA_MATRIX],
-      useBarCodeDetectorIfSupported: true, verbose: false,
-    });
-    try {
-      await scanner.start({ facingMode: 'environment' },
-        { fps: 10, qrbox: (w, h) => ({ width: Math.floor(w * 0.7), height: Math.max(60, Math.floor(Math.min(h, w) * 0.22)) }) },
-        onDecode, () => {});
-    } catch (err) { started = false; $('last').textContent = 'Camera error: ' + err; return; }
-  }
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
   actx.resume();
   keepAwake();
+  if (!track || track.readyState === 'ended') {
+    $('scan').disabled = true; $('last').textContent = 'Starting camera…';
+    try { await startCamera(); $('last').textContent = ''; }
+    catch (err) { $('last').textContent = 'Camera error: ' + (err && err.message ? err.message : err); return; }
+    finally { $('scan').disabled = false; }
+  }
   arm();
 };
 </script>

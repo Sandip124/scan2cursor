@@ -1,0 +1,4 @@
+zxing_reader.wasm is built from zxing-cpp (https://github.com/zxing-cpp/zxing-cpp),
+licensed under the Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
+Built and published by zxing-wasm 3.1.7 (MIT, see zxing-wasm.LICENSE).
+barcode-detector.js is barcode-detector 3.2.4 (MIT, see barcode-detector.LICENSE).

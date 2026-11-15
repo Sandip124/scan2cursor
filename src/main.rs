@@ -50,9 +50,13 @@ use tower::ServiceExt;
 const INDEX_HTML: &str = include_str!("../public/index.html");
 const SCANNER_HTML: &str = include_str!("../public/scanner.html");
 const BRIDGE_JS: &str = include_str!("../public/bridge.js");
-const HTML5_QRCODE_JS: &str = include_str!("../public/vendor/html5-qrcode.min.js");
+const BARCODE_DETECTOR_JS: &str = include_str!("../public/vendor/barcode-detector.js");
+const ZXING_WASM: &[u8] = include_bytes!("../public/vendor/zxing_reader.wasm");
+const SCAN_WORKER_JS: &str = include_str!("../public/scan-worker.js");
 const LOGO_SVG: &str = include_str!("../public/logo.svg");
 const ICON_PNG: &[u8] = include_bytes!("../public/icon-180.png");
+const ICON_192_PNG: &[u8] = include_bytes!("../public/icon-192.png");
+const ICON_512_PNG: &[u8] = include_bytes!("../public/icon-512.png");
 const MAX_CODE_CHARS: usize = 512;
 // Fixed limits, so memory stays flat however long the server runs.
 const PEER_BUFFER: usize = 256; // messages waiting for one connection; a connection that stops reading is dropped
@@ -842,6 +846,27 @@ fn is_loopback(ip: IpAddr) -> bool {
     }
 }
 
+/// "Add to Home Screen" description for the scanner page. The installed app opens the scanner link;
+/// the pairing code is only included when it is the current one (a phone that already has its own
+/// key does not need it).
+async fn manifest(State(app): State<Arc<App>>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let start = match q.get("t") {
+        Some(t) if app.token_ok(Some(t)) => format!("/scanner.html?t={t}"),
+        _ => "/scanner.html".to_string(),
+    };
+    let body = serde_json::json!({
+        "name": "Scan2Cursor", "short_name": "Scan2Cursor", "description": "Scan on your phone, typed on the computer",
+        "start_url": start, "scope": "/", "display": "standalone", "orientation": "portrait",
+        "background_color": "#111111", "theme_color": "#111111",
+        "icons": [
+            { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+            { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+            { "src": "/logo.svg", "sizes": "any", "type": "image/svg+xml" },
+        ],
+    });
+    ([(header::CONTENT_TYPE, "application/manifest+json"), (header::CACHE_CONTROL, "no-cache")], body.to_string()).into_response()
+}
+
 /// Headers that a proxy or tunnel adds. Their presence means the request came from outside, even if
 /// the connection itself is from 127.0.0.1 (cloudflared runs on this machine and connects locally).
 const PROXY_HEADERS: [&str; 5] = ["cf-connecting-ip", "cf-ray", "x-forwarded-for", "forwarded", "x-real-ip"];
@@ -1084,7 +1109,12 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         .route("/index.html", get(|| async { asset("text/html; charset=utf-8", INDEX_HTML) }))
         .route("/scanner.html", get(|| async { asset("text/html; charset=utf-8", SCANNER_HTML) }))
         .route("/bridge.js", get(|| async { asset("text/javascript; charset=utf-8", BRIDGE_JS) }))
-        .route("/vendor/html5-qrcode.js", get(|| async { asset("text/javascript; charset=utf-8", HTML5_QRCODE_JS) }))
+        .route("/vendor/barcode-detector.js", get(|| async { asset("text/javascript; charset=utf-8", BARCODE_DETECTOR_JS) }))
+        .route("/vendor/zxing_reader.wasm", get(|| async { asset("application/wasm", ZXING_WASM) }))
+        .route("/scan-worker.js", get(|| async { asset("text/javascript; charset=utf-8", SCAN_WORKER_JS) }))
+        .route("/icon-192.png", get(|| async { asset("image/png", ICON_192_PNG) }))
+        .route("/icon-512.png", get(|| async { asset("image/png", ICON_512_PNG) }))
+        .route("/manifest.webmanifest", get(manifest))
         .route("/logo.svg", get(|| async { asset("image/svg+xml", LOGO_SVG) }))
         .route("/icon-180.png", get(|| async { asset("image/png", ICON_PNG) }))
         .route("/api/pair", get(pair))

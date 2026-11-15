@@ -47,15 +47,31 @@ warning disappears by itself once it works. No restart is needed.
    *Show details → visit this website* (iPhone). See [Certificate warning](#certificate-warning).
 4. Tap **SCAN**, point at a barcode. A beep means it was typed on the computer.
 
-Tip: add the page to the phone's home screen to open it like an app next time.
+Tip: add the page to the phone's home screen (Safari: Share → Add to Home Screen; Chrome: menu →
+Install app / Add to Home screen). It then opens full screen like an app, with the Scan2Cursor icon.
+On an iPhone the home-screen app pairs once more on its first launch (it keeps its own storage),
+using the QR code that is current at that moment.
 
 ### The scanner page on the phone
 
 - **Top bar:** the Scan2Cursor logo, a status dot with text (green "ready" when scans will be
   typed), an icon for how the phone is connected (Wi-Fi symbol = same Wi-Fi, cloud = internet
   tunnel), and the phone's name.
+- **Camera view:** only the code inside the white strip is read (yellow while scanning), so a
+  label full of barcodes does not give the wrong one. A code is accepted after two matching reads.
+- **🔦 and 1× 2× 3×:** torch and zoom, shown only when the phone allows them. On Android, tap the
+  camera view to focus there.
 - **SCAN button:** tap it, then point at a barcode. It sits a little above the bottom edge so the
   thumb reaches it easily. Tap again to cancel.
+
+**iPhone Pro models:** the main camera cannot focus closer than about 9 cm, so close-up codes look
+blurry. The page therefore starts at **2×**: hold the phone about 15–20 cm away and the code still
+fills the strip, in focus.
+
+Reading uses the phone's built-in barcode reader where the browser has one (Chrome on Android),
+otherwise a decoder (zxing-cpp) that the computer serves to the phone. It never downloads anything
+from the internet. If a phone reads badly, adding `&engine=zxing` to the scanner link forces the
+second decoder, to compare.
 - **Result line:** `✓` and the code when it was typed on the computer; `⏳` while it is waiting; `✗`
   with the reason when it was refused.
 
@@ -77,7 +93,9 @@ Every scan is saved on the phone first and only removed once the computer confir
 - The page keeps the screen awake while it is open, and reconnects at once when the screen comes
   back on or the network returns.
 - Waiting scans survive a closed browser or a restarted phone. The page itself needs the computer
-  to open, so after a restart they go out as soon as the page loads again.
+  to open, so after a restart they go out as soon as the page loads again. (Opening the page with no
+  connection at all is not possible on the **Same Wi-Fi** link: browsers do not allow offline pages
+  on a self-made certificate.)
 - Scanning the same barcode twice types it twice (on purpose: counting identical items). Only a
   scan the phone re-sends after a dropped connection is skipped if it was already typed.
 

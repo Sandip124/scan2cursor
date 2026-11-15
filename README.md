@@ -8,6 +8,8 @@ web form.
 
 - **Nothing to install on the phone.** It runs in the phone's browser.
 - **Several phones at once.** Each one is listed on the pairing page and can be removed there.
+- **Fast, offline barcode reading.** Uses the phone's built-in reader where available, otherwise a
+  WebAssembly decoder served by the computer; torch and zoom buttons; installs to the home screen.
 - **No scan is lost.** Scans wait on the phone when the connection drops and are typed, in order,
   when it is back. The OK beep only sounds once the code is really typed.
 - **Same Wi-Fi, or any network.** An optional internet tunnel lets a phone on mobile data connect.
