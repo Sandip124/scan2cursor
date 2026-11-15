@@ -155,6 +155,11 @@ key, which the phone keeps. Removing a phone deletes its key. To remove **all** 
 
 Run these from this folder. On Windows use `scan2cursor.exe` instead of `./scan2cursor`.
 
+**Windows:** `scan2cursor.exe` with no command (or a double-click) starts the server hidden in the
+background and returns. Closing the command window does not stop it; `scan2cursor.exe stop` does.
+`scan2cursor.exe run` keeps it in the window instead, to see errors. To also start it at every
+logon, run `scripts\install.bat` once.
+
 | Command | What it does |
 |---|---|
 | `./scan2cursor status` | Is it running? Shows the page address, network address and log file |

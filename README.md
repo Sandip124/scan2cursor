@@ -65,7 +65,8 @@ restarts, so phones scan the new code after a reboot. Turn it off with `tunnel o
 
 ## Commands
 
-Run from this folder. On Windows use `scan2cursor.exe`.
+Run from this folder. On Windows use `scan2cursor.exe`; there, `scan2cursor.exe` alone (or a
+double-click) starts the server hidden in the background, so the command window can be closed.
 
 | Command | What it does |
 |---|---|
