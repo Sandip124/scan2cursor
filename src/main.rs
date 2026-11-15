@@ -3,6 +3,7 @@
 // One small binary: HTTPS + WebSocket server and keyboard typer.
 //
 // Usage:  scan2cursor [run]                    run the server in this terminal
+//                                              (Windows, no command: start it in the background instead)
 //         scan2cursor start|stop|restart|status control the auto-start background server
 //         scan2cursor tunnel on|off|status     reach this computer from any network
 //         scan2cursor new-token [--no-restart] make a new pairing token (restarts the server)
@@ -53,6 +54,7 @@ const BRIDGE_JS: &str = include_str!("../public/bridge.js");
 const BARCODE_DETECTOR_JS: &str = include_str!("../public/vendor/barcode-detector.js");
 const ZXING_WASM: &[u8] = include_bytes!("../public/vendor/zxing_reader.wasm");
 const SCAN_WORKER_JS: &str = include_str!("../public/scan-worker.js");
+const SW_JS: &str = include_str!("../public/sw.js");
 const LOGO_SVG: &str = include_str!("../public/logo.svg");
 const ICON_PNG: &[u8] = include_bytes!("../public/icon-180.png");
 const ICON_192_PNG: &[u8] = include_bytes!("../public/icon-192.png");
@@ -239,6 +241,45 @@ fn service_installed() -> bool {
     }
 }
 
+/// Windows: start the server as a separate hidden process. It does not belong to the command
+/// window it was started from, so closing that window (or logging the launcher off the task) leaves
+/// it running.
+#[cfg(windows)]
+fn spawn_background() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200; // Ctrl+C in the launching window is not passed on
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000; // outlive the Task Scheduler job that launched it
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let spawn = |flags: u32| {
+        std::process::Command::new(&exe)
+            .arg("run")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(flags)
+            .spawn()
+            .is_ok()
+    };
+    // Leaving the job is refused in some setups: then start it inside the job.
+    spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB) || spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+}
+#[cfg(not(windows))]
+fn spawn_background() -> bool {
+    false
+}
+
+/// Windows: stop every running copy of this program (and its cloudflared), except this process.
+fn stop_background() {
+    let name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "scan2cursor.exe".into());
+    sh("taskkill", &["/F", "/T", "/IM", &name, "/FI", &format!("PID ne {}", std::process::id())]);
+}
+
 fn service(action: Action) -> bool {
     if cfg!(target_os = "macos") {
         let uid = std::process::Command::new("id")
@@ -258,12 +299,20 @@ fn service(action: Action) -> bool {
             Action::Restart => sh("launchctl", &["bootstrap", &format!("gui/{uid}"), &plist]),
         }
     } else if cfg!(windows) {
-        let ps = match action {
-            Action::Start => "Start-ScheduledTask -TaskName Scan2Cursor",
-            Action::Stop => "Stop-ScheduledTask -TaskName Scan2Cursor",
-            Action::Restart => "Stop-ScheduledTask -TaskName Scan2Cursor; Start-ScheduledTask -TaskName Scan2Cursor",
-        };
-        sh("powershell", &["-NoProfile", "-Command", ps])
+        // The server is a hidden background process of its own (not the scheduled task, which only
+        // launches it at logon), so it is started and stopped directly.
+        match action {
+            Action::Start => server_answering() || spawn_background(),
+            Action::Stop => {
+                stop_background();
+                true
+            }
+            Action::Restart => {
+                stop_background();
+                wait_for(false);
+                spawn_background()
+            }
+        }
     } else {
         let verb = match action {
             Action::Start => "start",
@@ -275,7 +324,8 @@ fn service(action: Action) -> bool {
 }
 
 fn cmd_service(action: Action) {
-    if !service_installed() {
+    // Windows needs no installed service to run in the background.
+    if !cfg!(windows) && !service_installed() {
         eprintln!("Auto-start is not installed. Run scripts/install.sh (macOS/Linux) or scripts\\install.bat (Windows),");
         eprintln!("or run the server in this terminal with: scan2cursor run");
         std::process::exit(1);
@@ -290,6 +340,9 @@ fn cmd_service(action: Action) {
         println!("Server {what}.");
         if action == Action::Stop {
             println!("It starts again at next login, or with: scan2cursor start");
+        } else if cfg!(windows) {
+            println!("It runs in the background: this window can be closed. Open http://localhost:{}/", port());
+            println!("Stop it with: scan2cursor stop");
         }
     } else {
         eprintln!("Could not confirm the server {what}. See logs/scan2cursor.log, or run 'scan2cursor run' to see errors.");
@@ -372,7 +425,7 @@ fn cmd_tunnel(home: &Path, arg: Option<&str>) {
 
 const USAGE: &str = "Usage: scan2cursor <command>
   run                       run the server in this terminal (Ctrl+C to stop)
-  start | stop | restart    control the auto-start background server
+  start | stop | restart    control the background server (Windows: no command = start)
   status                    is it running? shows page address, internet address and log file
   tunnel on | off | status  let phones on other networks (mobile data) connect, via Cloudflare
   new-token [--no-restart]  make a new pairing token (phones must re-scan the QR code)";
@@ -1036,6 +1089,8 @@ fn main() {
     let home = home_dir();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        // Windows, no command (double-click, or the logon task): run hidden in the background.
+        None if cfg!(windows) => return cmd_service(Action::Start),
         None | Some("run") => {}
         Some("start") => return cmd_service(Action::Start),
         Some("stop") => return cmd_service(Action::Stop),
@@ -1112,6 +1167,7 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         .route("/vendor/barcode-detector.js", get(|| async { asset("text/javascript; charset=utf-8", BARCODE_DETECTOR_JS) }))
         .route("/vendor/zxing_reader.wasm", get(|| async { asset("application/wasm", ZXING_WASM) }))
         .route("/scan-worker.js", get(|| async { asset("text/javascript; charset=utf-8", SCAN_WORKER_JS) }))
+        .route("/sw.js", get(|| async { asset("text/javascript; charset=utf-8", SW_JS) }))
         .route("/icon-192.png", get(|| async { asset("image/png", ICON_192_PNG) }))
         .route("/icon-512.png", get(|| async { asset("image/png", ICON_512_PNG) }))
         .route("/manifest.webmanifest", get(manifest))

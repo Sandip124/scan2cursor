@@ -8,7 +8,7 @@ $bin = Join-Path $dir 'scan2cursor.exe'
 if ((Test-Path (Join-Path $dir 'src')) -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
   cargo build --release
   if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
-  Stop-ScheduledTask -TaskName 'Scan2Cursor' -ErrorAction SilentlyContinue   # release the old .exe before overwriting
+  if (Test-Path $bin) { & $bin stop | Out-Null }   # release the old .exe before overwriting
   Copy-Item (Join-Path $dir 'target\release\scan2cursor.exe') $bin -Force
 } elseif (-not (Test-Path $bin)) {
   throw "No scan2cursor.exe found. Put the prebuilt binary in $dir, or install Rust (https://rustup.rs) and re-run."
@@ -24,8 +24,7 @@ Register-ScheduledTask -TaskName 'Scan2Cursor' -Action $action -Trigger $trigger
 # Firewall rule (works only if run as admin; otherwise click "Allow" on the Windows prompt).
 try { New-NetFirewallRule -DisplayName 'Scan2Cursor' -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -Profile Private -ErrorAction Stop | Out-Null } catch {}
 
-Stop-ScheduledTask -TaskName 'Scan2Cursor' -ErrorAction SilentlyContinue
-Start-ScheduledTask -TaskName 'Scan2Cursor'
-Start-Sleep -Seconds 2
+# The task only launches the server at logon; the server itself runs hidden in the background.
+& $bin restart
 Start-Process 'http://localhost:8443/'
 Write-Host 'Done. Scan the QR code on the page that just opened with your phone.'

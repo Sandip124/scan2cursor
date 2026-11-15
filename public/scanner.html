@@ -4,7 +4,9 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#111111">
+<meta name="theme-color" content="#d6cdb8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#2b2823" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="manifest" id="manifest" href="/manifest.webmanifest">
@@ -13,53 +15,100 @@
   document.getElementById('manifest').href = '/manifest.webmanifest?t=' + encodeURIComponent(new URLSearchParams(location.search).get('t') || '');
 </script>
 <style>
+  /* Looks like an old handheld barcode scanner: beige case, dark window with a red laser line,
+     green LCD readout, big yellow trigger. No web fonts: the page is served by the computer, often offline. */
+  :root{--case-hi:#ddd5c1;--case:#cfc5ae;--case-lo:#a39a84;--ink:#2a2620;--dark:#2a2620;--paper:#f4ecd8;--lcd:#a7b594;--lcd-ink:#1a2412;--laser:#ff2a1f;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+  /* Dark theme follows the phone's setting: same scanner in a charcoal case. */
+  @media (prefers-color-scheme:dark){
+    :root{--case-hi:#35322c;--case:#24221e;--case-lo:#0c0b0a;--ink:#e9e2cf;--dark:#111;--lcd:#93a383}
+    #bezel{box-shadow:inset 0 2px 0 rgba(255,255,255,.14),0 0 0 1px #45413a,0 3px 0 var(--case-lo),0 7px 10px rgba(0,0,0,.4)}
+    #dot,#dot.ok,#dot.pair{--dark:#000}
+  }
   html,body{height:100%}
-  body{margin:0;font:16px system-ui;background:#111;color:#fff;display:flex;flex-direction:column}
-  #top{padding:calc(.6rem + env(safe-area-inset-top)) 1rem .6rem;display:flex;align-items:center;gap:.5rem;font-size:.9rem;color:#aaa}
-  #logo{width:32px;height:32px;border-radius:8px;margin-right:.2rem}
-  #dot{width:10px;height:10px;border-radius:50%;background:#e44;flex:none}
-  #dot.ok{background:#3d6}
+  body{margin:0;font:16px var(--mono);background:linear-gradient(var(--case-hi),var(--case));color:var(--ink);display:flex;flex-direction:column;
+    overscroll-behavior:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  button{font-family:inherit;color:inherit}
+  #top{padding:calc(.6rem + env(safe-area-inset-top)) .9rem .6rem;display:flex;align-items:center;gap:.5rem;
+    font-size:.72rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+  #logo{width:30px;height:30px;border-radius:6px;margin-right:.1rem}
+  /* Status light: red = no link, green = ready, blinking amber = waiting to be paired. */
+  #dot{width:11px;height:11px;border-radius:50%;flex:none;background:radial-gradient(circle at 35% 30%,#ff9a8f,#d51f12 60%);
+    box-shadow:0 0 0 2px var(--dark),0 0 7px 1px rgba(213,31,18,.7)}
+  #dot.ok{background:radial-gradient(circle at 35% 30%,#b6ffb0,#17b53a 60%);box-shadow:0 0 0 2px var(--dark),0 0 7px 1px rgba(23,181,58,.75)}
+  #dot.pair{background:radial-gradient(circle at 35% 30%,#ffe9a8,#f2a200 60%);box-shadow:0 0 0 2px var(--dark),0 0 7px 1px rgba(242,162,0,.8);animation:blink 1s steps(2) infinite}
+  #q{padding:.2rem .4rem;background:var(--dark);color:#ffd866;border-radius:3px;white-space:nowrap}
+  #q[hidden]{display:none}
   /* How this phone reaches the computer: Wi-Fi or internet tunnel. Icon only. */
-  #q{color:#fc3;font-weight:600;white-space:nowrap}
   #via{margin-left:auto;display:flex;flex:none}
-  #hold{margin:0 1rem .6rem;padding:.7rem .8rem;background:#3a2f00;color:#ffe08a;border-radius:12px;font-size:.95rem}
+  #via svg{width:20px;height:20px}
+  #nm{background:var(--dark);border:0;border-radius:3px;color:var(--paper);font-size:inherit;font-weight:700;letter-spacing:.08em;text-transform:none;
+    padding:.35rem .55rem;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #nm:empty{display:none}
+  #hold{margin:0 .75rem .6rem;padding:.7rem .8rem;background:var(--dark);color:#ffd866;border-radius:6px;font-size:.85rem;line-height:1.35;
+    border-top:6px solid transparent;border-image:repeating-linear-gradient(-45deg,#ffc21a 0 10px,#2a2620 10px 20px) 6}
   #hold[hidden]{display:none}
   #hold .actions{display:flex;gap:.5rem;margin-top:.6rem}
-  #hold button{flex:1;padding:.6rem;font:inherit;font-weight:600;border:0;border-radius:10px}
-  #send{background:#fc3;color:#000}
-  #discard{background:#5a4a10;color:#ffe08a}
+  #hold button{flex:1;padding:.6rem;font-size:.85rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;border-radius:4px}
+  #send{background:#ffc21a;color:var(--dark);border:0}
+  #discard{background:none;color:#ffd866;border:1px solid #ffd866}
   #send[hidden]{display:none}
-  #via svg{width:22px;height:22px}
-  #nm{background:none;border:1px solid #444;border-radius:8px;color:#ddd;font:inherit;padding:.25rem .6rem;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  /* Camera view with the scan strip: only the strip is decoded (faster, fewer wrong reads). */
-  #reader{position:relative;width:100%;height:46vh;background:#000;overflow:hidden}
+  /* Scanner window. Only the strip between the corner marks is decoded (faster, fewer wrong reads). */
+  #bezel{margin:0 .75rem;padding:.55rem;background:linear-gradient(#2e2b26,#141310);border-radius:14px;
+    box-shadow:inset 0 2px 0 rgba(255,255,255,.14),0 3px 0 var(--case-lo),0 7px 10px rgba(0,0,0,.25)}
+  #reader{position:relative;width:100%;height:42vh;background:#050505;border-radius:6px;overflow:hidden}
   #cam{width:100%;height:100%;object-fit:cover;display:block}
-  #strip{position:absolute;left:7%;width:86%;top:34%;height:32%;border:2px solid rgba(255,255,255,.85);border-radius:12px;box-shadow:0 0 0 100vmax rgba(0,0,0,.35);pointer-events:none}
-  #reader.armed #strip{border-color:#fc3}
-  #camctl{position:absolute;right:.6rem;bottom:.6rem;display:flex;gap:.4rem}
-  #camctl button{min-width:2.6rem;padding:.45rem .6rem;font:inherit;font-size:.9rem;font-weight:600;color:#fff;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.35);border-radius:999px}
-  #camctl button.on{background:#fff;color:#000}
+  /* Darker edges over the camera picture. */
+  #reader::after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.45))}
+  #strip{--c:var(--paper);--t:3px;--l:22px;position:absolute;left:7%;width:86%;top:34%;height:32%;pointer-events:none;
+    box-shadow:0 0 0 100vmax rgba(0,0,0,.45);background-repeat:no-repeat;
+    background-image:linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),
+      linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c));
+    background-position:top left,top left,top right,top right,bottom left,bottom left,bottom right,bottom right;
+    background-size:var(--l) var(--t),var(--t) var(--l),var(--l) var(--t),var(--t) var(--l),var(--l) var(--t),var(--t) var(--l),var(--l) var(--t),var(--t) var(--l)}
+  /* Pairing: a taller window, to fit the square QR code on the computer's screen. */
+  #reader.pair #strip{left:12%;width:76%;top:8%;height:84%}
+  #reader.armed #strip{--c:#ffc21a}
+  /* The laser line: dim while idle, bright and sweeping while reading. */
+  #strip::before{content:"";position:absolute;left:3%;right:3%;top:50%;height:2px;margin-top:-1px;background:var(--laser);
+    box-shadow:0 0 8px 2px rgba(255,42,31,.7);opacity:.3}
+  #reader.armed #strip::before{opacity:1;animation:sweep .9s ease-in-out infinite alternate}
+  @keyframes sweep{from{top:10%}to{top:90%}}
+  @keyframes blink{50%{opacity:.25}}
+  @media (prefers-reduced-motion:reduce){#reader.armed #strip::before,#dot.pair{animation:none}}
+  #camctl{position:absolute;z-index:1;right:.5rem;bottom:.5rem;display:flex;gap:.35rem}
+  #camctl button{min-width:2.5rem;height:2.1rem;padding:0 .5rem;display:grid;place-items:center;font-size:.8rem;font-weight:700;color:var(--paper);
+    background:rgba(0,0,0,.6);border:1px solid rgba(244,236,216,.45);border-radius:4px}
+  #camctl button.on{background:#ffc21a;color:var(--dark);border-color:#ffc21a}
+  #camctl svg{width:16px;height:16px}
   #zoom{display:flex;gap:.3rem}
   #camctl [hidden]{display:none}
-  #camhint{position:absolute;inset:0;display:grid;place-items:center;color:#aaa;font-size:.95rem;text-align:center;padding:1rem}
-  #last{flex:1;display:flex;align-items:center;justify-content:center;padding:.5rem 1rem;font:1.3rem ui-monospace,monospace;word-break:break-all;text-align:center}
-  /* Raised from the bottom edge so the thumb reaches it comfortably while holding the phone. */
-  #scan{margin:0 1rem calc(14vh + env(safe-area-inset-bottom));padding:1.7rem 1.4rem;font-size:1.5rem;font-weight:600;border:0;border-radius:18px;background:#3d6;color:#000;touch-action:manipulation}
-  #scan.armed{background:#fc3}
+  /* LCD readout: the last scan, or what to do next. */
+  #last{flex:1;min-height:3.6rem;margin:.8rem .75rem;padding:.5rem .8rem;display:flex;align-items:center;justify-content:center;text-align:center;
+    font-size:1.15rem;font-weight:700;line-height:1.3;word-break:break-word;color:var(--lcd-ink);background:var(--lcd);border-radius:6px;
+    box-shadow:inset 0 2px 6px rgba(0,0,0,.45),0 1px 0 rgba(255,255,255,.55);-webkit-user-select:text;user-select:text}
+  /* Trigger. Raised from the bottom edge so the thumb reaches it comfortably while holding the phone. */
+  #scan{margin:0 .75rem calc(11vh + env(safe-area-inset-bottom));padding:1.5rem 1.2rem;font-size:1.5rem;font-weight:800;letter-spacing:.28em;text-indent:.28em;
+    color:var(--dark);background:linear-gradient(#ffcb3a,#f2a200);border:0;border-radius:14px;touch-action:manipulation;
+    box-shadow:inset 0 2px 0 rgba(255,255,255,.55),0 7px 0 #9c6a00,0 11px 12px rgba(0,0,0,.3)}
+  #scan:active{transform:translateY(5px);box-shadow:inset 0 2px 0 rgba(255,255,255,.4),0 2px 0 #9c6a00,0 3px 5px rgba(0,0,0,.3)}
+  #scan.armed{color:#fff;background:linear-gradient(#ff6243,#dd2f18);box-shadow:inset 0 2px 0 rgba(255,255,255,.35),0 7px 0 #8a1a0c,0 11px 12px rgba(0,0,0,.3)}
+  #scan.armed:active{box-shadow:inset 0 2px 0 rgba(255,255,255,.3),0 2px 0 #8a1a0c,0 3px 5px rgba(0,0,0,.3)}
+  #scan:disabled{opacity:.6}
 </style>
 <div id="top"><img id="logo" src="/logo.svg" alt="Scan2Cursor"><span id="dot"></span><span id="st">connecting…</span><span id="q" hidden></span><span id="via" role="img"></span><button id="nm" title="Rename this phone"></button></div>
 <div id="hold" hidden><span id="holdtext"></span><span class="actions"><button id="send">Send now</button><button id="discard">Discard</button></span></div>
-<div id="reader">
+<div id="bezel"><div id="reader">
   <video id="cam" playsinline muted></video>
-  <div id="camhint">Tap SCAN to start the camera</div>
   <div id="strip"></div>
-  <div id="camctl"><span id="zoom" hidden></span><button id="torch" hidden aria-label="Torch">🔦</button></div>
-</div>
-<div id="last"></div>
+  <div id="camctl"><span id="zoom" hidden></span><button id="torch" hidden aria-label="Torch"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg></button></div>
+</div></div>
+<div id="last" role="status"></div>
 <button id="scan">SCAN</button>
 <script>
 // Works like a handheld scanner trigger: tap SCAN, the next barcode inside the box is read once, sent, and typed + Enter on the desktop.
-const t = new URLSearchParams(location.search).get('t') || '';
+// A phone that is not paired yet uses the same camera to read the QR code on the computer (see "Pairing").
+let t = new URLSearchParams(location.search).get('t') || '';
 const $ = id => document.getElementById(id);
 let ws, actx, armed = false, armTimer;
 
@@ -76,17 +125,25 @@ const tick = () => tone(900, 40, 'sine', 0.25); // "saved, will go through"
 const buzz = p => navigator.vibrate && navigator.vibrate(p);
 
 // Connection type icon: a plain network address means the same Wi-Fi; a host name means the internet tunnel.
-const viaWifi = /^(\d{1,3}\.){3}\d{1,3}$|^localhost$|^\[/.test(location.hostname);
+// The computer's address. Normally the one this page came from; after the internet address changed,
+// the one read from the computer's QR code (the installed app keeps opening from its saved copy).
+let server = location.host;
+try { server = localStorage.getItem('s2cServer') || server; } catch {}
+const isLocalHost = h => /^(\d{1,3}\.){3}\d{1,3}$|^localhost$|^\[/.test(h);
+function showVia() {
+const viaWifi = isLocalHost(server.replace(/:\d+$/, ''));
 $('via').innerHTML = viaWifi
-  ? '<svg viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M2.5 9.2a14 14 0 0 1 19 0"/><path d="M5.8 12.7a9 9 0 0 1 12.4 0"/><path d="M9 16.1a4.5 4.5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.4" fill="#ddd" stroke="none"/></svg>'
-  : '<svg viewBox="0 0 24 24" fill="#ddd" aria-hidden="true"><path d="M7 19h10.5a4.5 4.5 0 0 0 .7-8.95A6.5 6.5 0 0 0 5.6 9.3 4.9 4.9 0 0 0 7 19z"/></svg>';
+  ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M2.5 9.2a14 14 0 0 1 19 0"/><path d="M5.8 12.7a9 9 0 0 1 12.4 0"/><path d="M9 16.1a4.5 4.5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.4" fill="currentColor" stroke="none"/></svg>'
+  : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 19h10.5a4.5 4.5 0 0 0 .7-8.95A6.5 6.5 0 0 0 5.6 9.3 4.9 4.9 0 0 0 7 19z"/></svg>';
 $('via').setAttribute('aria-label', viaWifi ? 'Connected over Wi-Fi' : 'Connected over the internet');
 $('via').title = viaWifi ? 'Connected over Wi-Fi' : 'Connected over the internet';
+}
+showVia();
 
 let online = false, desktops = 0, unpaired = false;
 function showStatus() {
   const ok = online && desktops > 0;
-  $('dot').className = ok ? 'ok' : '';
+  $('dot').className = unpaired ? 'pair' : ok ? 'ok' : '';
   $('st').textContent = unpaired ? 'not paired' : !online ? 'offline' : desktops ? 'ready' : 'computer cannot type yet';
 }
 // This phone's own key, given by the computer when it was paired. The QR code's token (t) is only
@@ -131,7 +188,7 @@ function showQueue() {
   bar.hidden = false;
   const since = new Date(queue[0].at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   $('holdtext').textContent = unpaired
-    ? `${n} scan${n === 1 ? '' : 's'} not sent. Scan the QR code on the computer again to connect.`
+    ? `${n} scan${n === 1 ? '' : 's'} not sent. Pair with the computer again to send them.`
     : `${n} scan${n === 1 ? '' : 's'} waiting since ${since}. Click into the right field on the computer, then send.`;
   $('send').hidden = unpaired;
 }
@@ -186,24 +243,29 @@ function onAck(m) {
 }
 
 // ---------- Connection ----------
-let reconnectTimer = null;
+let reconnectTimer = null, fails = 0, relinked = false;
 function connect() {
   clearTimeout(reconnectTimer);
+  let opened = false;
   const name = myName ? '&name=' + encodeURIComponent(myName) : '';
   const key = myKey ? '&k=' + encodeURIComponent(myKey) : '';
-  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=phone&t=${encodeURIComponent(t)}${key}${name}`);
-  ws.onopen = () => { online = true; inFlight = 0; paused = false; showStatus(); pump(); };
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${server}/ws?role=phone&t=${encodeURIComponent(t)}${key}${name}`);
+  ws.onopen = () => {
+    opened = true; fails = 0; online = true; inFlight = 0; paused = false; showStatus(); pump();
+    if (relinked) { relinked = false; $('last').textContent = '✓ Connected'; }
+  };
   ws.onclose = e => {
     online = false; inFlight = 0;
+    // Never got through, several times in a row: the computer is off, or its internet address changed.
+    if (!opened && ++fails === 3 && navigator.onLine !== false)
+      $('last').textContent = 'Computer not reachable. If its address changed: tap SCAN and point at the QR code on the computer.';
     // 4403: removed on the computer. 4401: key unknown and the QR code has changed since.
     if (e.code === 4403 || e.code === 4401) {
-      unpaired = true; myKey = '';
+      myKey = '';
       try { localStorage.removeItem('bbKey'); } catch {}
+      if (t) { badTokens.add(t); t = ''; }
       if (queue.length) setHold(true); // after pairing again, the worker decides: send or discard
-      $('last').textContent = (e.code === 4403 ? 'This phone was removed on the computer.' : 'This phone is not paired with the computer.')
-        + ' Scan the QR code on the computer again to connect.';
-      showQueue();
-      return showStatus(); // do not keep retrying
+      return startPairing(e.code === 4403 ? 'Removed on the computer.' : 'Not paired.'); // do not keep retrying
     }
     showStatus(); reconnectTimer = setTimeout(connect, 1000);
   };
@@ -211,7 +273,7 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.type === 'hello') {
       $('nm').textContent = m.name;
-      if (m.key) { myKey = m.key; try { localStorage.setItem('bbKey', myKey); } catch {} }
+      if (m.key) { myKey = m.key; try { localStorage.setItem('bbKey', myKey); } catch {} $('last').textContent = '✓ Paired'; }
     }
     if (m.type === 'status') { desktops = m.desktops; showStatus(); }
     if (m.type === 'ack') onAck(m);
@@ -229,8 +291,6 @@ async function keepAwake() {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepAwake(); reconnectNow(); } });
 keepAwake();
-showQueue();
-connect();
 
 // ---------- Camera ----------
 // Own camera handling: 1080p for thin 1D bars, continuous focus, torch and zoom where the phone allows,
@@ -247,7 +307,6 @@ async function startCamera() {
   track = stream.getVideoTracks()[0];
   video.srcObject = stream;
   await video.play();
-  $('camhint').hidden = true;
   caps = (track.getCapabilities && track.getCapabilities()) || {};
   if ((caps.focusMode || []).includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
   setupControls();
@@ -330,6 +389,7 @@ function onFrameResult(e) {
   const { codes } = e.data;
   scanEngine = e.data.engine || scanEngine; // which decoder is in use, for troubleshooting
   if (!armed || !codes || !codes.length) return;
+  if (codes.some(c => useQr(c.code)) || unpaired) return; // the computer's QR code is never typed as a scan
   const c = codes[0];
   // Accept a code only after two matching reads: a single blurry frame can misread a 1D barcode.
   if (c.code !== candidate) { candidate = c.code; return; }
@@ -338,30 +398,93 @@ function onFrameResult(e) {
   addScan(c.code, c.format);
 }
 
+function showTrigger() {
+  $('scan').className = armed ? 'armed' : '';
+  $('scan').textContent = armed ? (unpaired ? 'PAIRING' : 'SCANNING') : unpaired ? 'PAIR' : 'SCAN';
+  $('reader').classList.toggle('armed', armed);
+  $('reader').classList.toggle('pair', unpaired);
+}
 function disarm() {
   armed = false; clearTimeout(armTimer);
-  $('scan').className = ''; $('scan').textContent = 'SCAN'; $('reader').classList.remove('armed');
+  showTrigger();
 }
 function arm() {
+  if (armed) return;
   armed = true; candidate = '';
-  $('scan').className = 'armed'; $('scan').textContent = 'Scanning…'; $('reader').classList.add('armed'); $('last').textContent = '';
-  clearTimeout(armTimer); armTimer = setTimeout(disarm, 8000);
+  showTrigger();
+  clearTimeout(armTimer);
+  // A barcode read gives up after 8 s; pairing keeps looking until the QR code is found.
+  if (!unpaired) { $('last').textContent = ''; armTimer = setTimeout(disarm, 8000); }
   nextFrame();
 }
-// The browser stops the camera when the page goes to the background; it restarts on the next tap.
-document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') disarm(); });
+let camStarting = null;
+function ensureCamera() {
+  if (track && track.readyState !== 'ended') return Promise.resolve();
+  if (!camStarting) camStarting = startCamera().finally(() => { camStarting = null; });
+  return camStarting;
+}
+
+// ---------- Pairing ----------
+// Not paired: the camera looks for the QR code shown on the computer, and pairs with it right here.
+// No separate camera app, no link to open. A paired phone can SCAN the same QR code to follow the
+// computer to a new internet address.
+const badTokens = new Set(); // QR codes the computer has already refused: do not try them again
+function startPairing(why) {
+  unpaired = true;
+  disarm(); showStatus(); showQueue();
+  $('last').textContent = why + ' Point the camera at the QR code on the computer.';
+  lookForQr();
+}
+// Starts by itself when the browser already allows the camera; otherwise the PAIR button asks for it.
+function lookForQr() {
+  if (!unpaired || document.visibilityState !== 'visible') return;
+  ensureCamera().then(() => { if (unpaired) arm(); }).catch(() => {});
+}
+// The QR code holds this scanner's link with the pairing code: https://<computer>/scanner.html?t=<code>
+// Returns true when the text was such a QR code (used or not), false for anything else.
+function useQr(text) {
+  let u;
+  try { u = new URL(text); } catch { return false; }
+  const token = u.searchParams.get('t');
+  if (!/^https?:$/.test(u.protocol) || u.pathname !== '/scanner.html' || !token) return false;
+  // A Wi-Fi address other than this page's: its certificate must be accepted in the browser first, so go there.
+  if (isLocalHost(u.hostname) && u.origin !== location.origin) { disarm(); $('last').textContent = 'Opening…'; location.href = u.href; return true; }
+  if (!myKey && badTokens.has(token)) { $('last').textContent = 'That QR code is out of date. Use the one on the computer now.'; return true; }
+  // This page's own address, or the computer's current internet address: connect to it from here.
+  server = u.host; t = token; unpaired = false;
+  try { localStorage.setItem('s2cServer', server); } catch {}
+  disarm(); showVia(); showStatus(); showQueue();
+  if (u.origin === location.origin) try { // keep the code in the address, so "Add to Home Screen" from here opens paired
+    history.replaceState(null, '', '/scanner.html?t=' + encodeURIComponent(t));
+    $('manifest').href = '/manifest.webmanifest?t=' + encodeURIComponent(t);
+  } catch {}
+  buzz(80); $('last').textContent = myKey ? 'Connecting…' : 'Pairing…';
+  relinked = !!myKey; fails = 0; online = false; inFlight = 0;
+  if (ws) { ws.onclose = null; ws.close(); }
+  connect();
+  return true;
+}
+
+// The browser stops the camera when the page goes to the background; it restarts on the next tap
+// (or by itself while pairing).
+document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') disarm(); else lookForQr(); });
 
 $('scan').onclick = async () => {
   if (armed) return disarm();
   if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
   actx.resume();
   keepAwake();
-  if (!track || track.readyState === 'ended') {
-    $('scan').disabled = true; $('last').textContent = 'Starting camera…';
-    try { await startCamera(); $('last').textContent = ''; }
-    catch (err) { $('last').textContent = 'Camera error: ' + (err && err.message ? err.message : err); return; }
-    finally { $('scan').disabled = false; }
-  }
+  $('scan').disabled = true;
+  try { await ensureCamera(); }
+  catch (err) { $('last').textContent = 'Camera error: ' + (err && err.message ? err.message : err); return; }
+  finally { $('scan').disabled = false; }
   arm();
 };
+
+// ---------- Start ----------
+// Saved copy of the app (sw.js). Not possible over the Wi-Fi address (its certificate is self-made): ignored there.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+showQueue();
+if (myKey || t) { connect(); ensureCamera().catch(() => {}); } // paired: camera ready before the first tap
+else startPairing('Not paired.');
 </script>
