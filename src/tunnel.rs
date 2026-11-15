@@ -75,7 +75,7 @@ pub fn download(home: &Path) -> Result<PathBuf, String> {
     let tmp = bin.join(format!("{asset}.part"));
     println!("Downloading cloudflared from {url} ...");
     let ok = std::process::Command::new("curl")
-        .args(["-fL", "--proto", "=https", "--retry", "2", "-o"])
+        .args(["-fL", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "--retry", "2", "-o"])
         .arg(&tmp)
         .arg(&url)
         .status()
@@ -117,7 +117,7 @@ pub fn clear_state(home: &Path) {
 }
 
 /// If the server was killed hard last time, its cloudflared may still be running: stop it.
-fn kill_stale(home: &Path) {
+fn kill_stale(home: &Path, port: u16) {
     let Some(pid) = fs::read_to_string(home.join(STATE))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -138,8 +138,12 @@ fn kill_stale(home: &Path) {
         if out("tasklist", &["/FI", &format!("PID eq {pid}"), "/NH"]).contains("cloudflared") {
             let _ = out("taskkill", &["/PID", &pid, "/F"]);
         }
-    } else if out("ps", &["-p", &pid, "-o", "comm="]).contains("cloudflared") {
-        let _ = out("kill", &[&pid]);
+    } else {
+        // Only our own tunnel, never another cloudflared that got the same number after a reboot.
+        let args = out("ps", &["-p", &pid, "-o", "args="]);
+        if args.contains("cloudflared") && args.contains(&format!("127.0.0.1:{port}")) {
+            let _ = out("kill", &[&pid]);
+        }
     }
 }
 
@@ -153,7 +157,7 @@ fn parse_url(line: &str) -> Option<String> {
 /// Keep a quick tunnel running for as long as the server runs. `on_url` gets the public address
 /// when it is ready and `None` when the tunnel is down.
 pub async fn run(home: PathBuf, port: u16, log: Logger, on_url: impl Fn(Option<String>)) {
-    kill_stale(&home);
+    kill_stale(&home, port);
     let Some(exe) = find(&home) else {
         log.log("tunnel is on but cloudflared was not found; run: scan2cursor tunnel on");
         return;

@@ -4,11 +4,12 @@
 //
 // Usage:  scan2cursor [run]                    run the server in this terminal
 //                                              (Windows, no command: start it in the background instead)
-//         scan2cursor start|stop|restart|status control the auto-start background server
-//         scan2cursor tunnel on|off|status     reach this computer from any network
+//         scan2cursor start|stop|restart|status control the background server
+//         scan2cursor tunnel [on|off|status]   reach this computer from any network
 //         scan2cursor new-token [--no-restart] make a new pairing token (restarts the server)
+//         scan2cursor help                     show the command list
 // Env:    PORT (default 8443), HOST_IP (override LAN IP), ENTER=0 (no Enter after scan), TUNNEL=1/0,
-//         DRY_RUN=1 (log instead of typing), TYPE=0 (never type; only bridge.js pages), TOKEN (fixed token), BB_HOME (data folder; default: next to binary)
+//         DRY_RUN=<anything> (log instead of typing), TYPE=0 (never type; only bridge.js pages), TOKEN (fixed token, 16+ characters), BB_HOME (data folder; default: next to binary)
 
 mod devices;
 mod tunnel;
@@ -56,7 +57,7 @@ const ZXING_WASM: &[u8] = include_bytes!("../public/vendor/zxing_reader.wasm");
 const SCAN_WORKER_JS: &str = include_str!("../public/scan-worker.js");
 const SW_JS: &str = include_str!("../public/sw.js");
 const LOGO_SVG: &str = include_str!("../public/logo.svg");
-const ICON_PNG: &[u8] = include_bytes!("../public/icon-180.png");
+const ICON_180_PNG: &[u8] = include_bytes!("../public/icon-180.png");
 const ICON_192_PNG: &[u8] = include_bytes!("../public/icon-192.png");
 const ICON_512_PNG: &[u8] = include_bytes!("../public/icon-512.png");
 const MAX_CODE_CHARS: usize = 512;
@@ -68,6 +69,10 @@ const TYPER_BUFFER: usize = 64; // scans waiting for the keyboard
 const BURST_PAUSE: Duration = Duration::from_millis(50); // after Enter, only when the next scan is already waiting
 const PAGE_CONFIRM_WAIT: Duration = Duration::from_secs(2); // how long to wait for a bridge.js page to confirm
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
+const LOG_NAME: &str = "scan2cursor.log";
+const MAX_CONNECTIONS: usize = 256; // open connections at once; more wait their turn
+const MIN_TOKEN_CHARS: usize = 16; // a shorter TOKEN could be guessed
+const CERT_DAYS: i64 = 825; // Apple's maximum for TLS certs
 
 // ---------- data folder, logging ----------
 
@@ -99,8 +104,8 @@ impl LogFile {
         if self.size <= MAX_LOG_BYTES {
             return;
         }
-        let path = self.dir.join("scan2cursor.log");
-        let _ = fs::rename(&path, self.dir.join("scan2cursor.log.old"));
+        let path = self.dir.join(LOG_NAME);
+        let _ = fs::rename(&path, self.dir.join(format!("{LOG_NAME}.old")));
         self.file = fs::OpenOptions::new().create(true).append(true).open(&path).ok();
         self.size = 0;
     }
@@ -110,7 +115,7 @@ impl Logger {
     fn open(home: &Path) -> Self {
         let dir = home.join("logs");
         let _ = fs::create_dir_all(&dir);
-        let path = dir.join("scan2cursor.log");
+        let path = dir.join(LOG_NAME);
         let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let file = fs::OpenOptions::new().create(true).append(true).open(path).ok();
         let mut lf = LogFile { dir, file, size };
@@ -163,11 +168,25 @@ fn generate_token(home: &Path) -> std::io::Result<String> {
     Ok(token)
 }
 
+/// This computer's id, in the QR code next to the token. Not a secret from paired phones: a phone
+/// remembers it, and only follows a QR code to a new address when the code carries the same id.
+fn load_server_id(home: &Path) -> std::io::Result<String> {
+    let path = home.join(".server-id");
+    let saved = fs::read_to_string(&path).unwrap_or_default();
+    if !saved.trim().is_empty() {
+        return Ok(saved.trim().to_string());
+    }
+    let id = random_hex(16)?;
+    write_private(&path, &id)?;
+    Ok(id)
+}
+
 fn load_token(home: &Path) -> std::io::Result<String> {
-    if let Ok(t) = std::env::var("TOKEN") {
-        if !t.is_empty() {
-            return Ok(t);
-        }
+    // A fixed TOKEN wins over the saved one at every start, so it also undoes the change made by "Remove".
+    match std::env::var("TOKEN") {
+        Ok(t) if t.len() >= MIN_TOKEN_CHARS => return Ok(t),
+        Ok(t) if !t.is_empty() => eprintln!("TOKEN is shorter than {MIN_TOKEN_CHARS} characters and was ignored; using the saved token."),
+        _ => {}
     }
     let saved = fs::read_to_string(home.join(".token")).unwrap_or_default();
     let saved = saved.trim();
@@ -184,6 +203,13 @@ fn same_secret(a: &str, b: &str) -> bool {
 }
 
 fn cmd_new_token(home: &Path, restart: bool) {
+    // Stop the server first: while it runs it still knows the old phones and would save them again.
+    let running = server_answering();
+    let stop_first = restart && running && (cfg!(windows) || service_installed());
+    if stop_first {
+        service(Action::Stop);
+        wait_for(false);
+    }
     if let Err(e) = generate_token(home) {
         eprintln!("Could not write new token: {e}");
         std::process::exit(1);
@@ -191,12 +217,14 @@ fn cmd_new_token(home: &Path, restart: bool) {
     devices::clear(home);
     println!("New QR code made and all paired phones forgotten. Every phone must scan the QR code again.");
     if restart {
-        cmd_service(Action::Restart);
+        cmd_service(if stop_first { Action::Start } else { Action::Restart });
         println!("Open http://localhost:{}/ and scan the new QR code with each phone.", port());
+    } else if running {
+        println!("The running server still uses the old one: stop and start it to apply.");
     }
 }
 
-// ---------- start / stop / restart / status (controls the auto-start service the installer set up) ----------
+// ---------- start / stop / restart / status (the background server: launchd / systemd service, or a hidden process on Windows) ----------
 
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
@@ -291,12 +319,12 @@ fn service(action: Action) -> bool {
         let plist = format!("{}/Library/LaunchAgents/com.scan2cursor.plist", std::env::var("HOME").unwrap_or_default());
         // Stop = unload (launchd would otherwise restart it). It loads again at next login or on start.
         let loaded = || sh("launchctl", &["print", &target]);
+        let load = || sh("launchctl", &["bootstrap", &format!("gui/{uid}"), &plist]);
         match action {
             Action::Stop => !loaded() || sh("launchctl", &["bootout", &target]),
-            Action::Start if loaded() => true,
-            Action::Start => sh("launchctl", &["bootstrap", &format!("gui/{uid}"), &plist]),
+            Action::Start => loaded() || load(),
             Action::Restart if loaded() => sh("launchctl", &["kickstart", "-k", &target]),
-            Action::Restart => sh("launchctl", &["bootstrap", &format!("gui/{uid}"), &plist]),
+            Action::Restart => load(),
         }
     } else if cfg!(windows) {
         // The server is a hidden background process of its own (not the scheduled task, which only
@@ -326,7 +354,7 @@ fn service(action: Action) -> bool {
 fn cmd_service(action: Action) {
     // Windows needs no installed service to run in the background.
     if !cfg!(windows) && !service_installed() {
-        eprintln!("Auto-start is not installed. Run scripts/install.sh (macOS/Linux) or scripts\\install.bat (Windows),");
+        eprintln!("Auto-start is not installed. Run: scripts/setup.sh install,");
         eprintln!("or run the server in this terminal with: scan2cursor run");
         std::process::exit(1);
     }
@@ -353,11 +381,11 @@ fn cmd_service(action: Action) {
 fn cmd_status(home: &Path) {
     let up = server_answering();
     println!("Server      : {}", if up { "running" } else { "NOT running (start it: scan2cursor start)" });
-    println!("Auto-start  : {}", if service_installed() { "installed (starts at login)" } else { "not installed (run the installer)" });
+    println!("Auto-start  : {}", if service_installed() { "installed (starts at login)" } else { "not installed (run scripts/setup.sh install, or scripts\\setup.bat on Windows)" });
     println!("Desktop page: http://localhost:{}/", port());
     println!("LAN address : {}", lan_ip());
     println!("Internet    : {}", tunnel_summary(home));
-    println!("Log file    : {}", home.join("logs").join("scan2cursor.log").display());
+    println!("Log file    : {}", home.join("logs").join(LOG_NAME).display());
     if !up {
         std::process::exit(1);
     }
@@ -373,11 +401,13 @@ fn tunnel_summary(home: &Path) -> String {
 
 fn cmd_tunnel(home: &Path, arg: Option<&str>) {
     let restart_if_installed = || {
-        if service_installed() {
+        let installed = service_installed();
+        if installed {
             cmd_service(Action::Restart);
         } else {
             println!("Start the server to apply: scan2cursor run");
         }
+        installed
     };
     match arg {
         Some("on") => {
@@ -393,8 +423,7 @@ fn cmd_tunnel(home: &Path, arg: Option<&str>) {
                 std::process::exit(1);
             }
             println!("Internet tunnel turned on.");
-            restart_if_installed();
-            if service_installed() {
+            if restart_if_installed() {
                 println!("Waiting for the internet address...");
                 let url = (0..60).find_map(|_| {
                     std::thread::sleep(Duration::from_millis(500));
@@ -424,11 +453,12 @@ fn cmd_tunnel(home: &Path, arg: Option<&str>) {
 }
 
 const USAGE: &str = "Usage: scan2cursor <command>
-  run                       run the server in this terminal (Ctrl+C to stop)
+  run                       run the server in this terminal (Ctrl+C to stop); macOS/Linux: the default
   start | stop | restart    control the background server (Windows: no command = start)
   status                    is it running? shows page address, internet address and log file
   tunnel on | off | status  let phones on other networks (mobile data) connect, via Cloudflare
-  new-token [--no-restart]  make a new pairing token (phones must re-scan the QR code)";
+  new-token [--no-restart]  make a new pairing token (phones must re-scan the QR code)
+  help                      show this list";
 
 // ---------- network + TLS ----------
 
@@ -447,12 +477,19 @@ fn lan_ip() -> String {
         .unwrap_or_else(|| "localhost".into())
 }
 
-/// Self-signed cert for the LAN IP, cached in .cert.json and regenerated when the IP changes.
+/// Self-signed cert for the LAN IP, cached in .cert.json and regenerated when the IP changes or
+/// the cert is within 30 days of running out.
 fn load_cert(home: &Path, host: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
     let path = home.join(".cert.json");
     if let Ok(raw) = fs::read_to_string(&path) {
         if let Ok(c) = serde_json::from_str::<serde_json::Value>(&raw) {
-            if c["host"] == host {
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            // Files from before the date was saved: count from when the file was written.
+            let expires = c["expires"].as_i64().or_else(|| {
+                let made = fs::metadata(&path).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some(made.as_secs() as i64 + CERT_DAYS * 86_400)
+            });
+            if c["host"] == host && expires.is_some_and(|e| e > now + 30 * 86_400) {
                 if let (Some(k), Some(p)) = (c["key"].as_str(), c["cert"].as_str()) {
                     return Ok((p.to_string(), k.to_string()));
                 }
@@ -467,11 +504,12 @@ fn load_cert(home: &Path, host: &str) -> Result<(String, String), Box<dyn std::e
     }
     let now = time::OffsetDateTime::now_utc();
     params.not_before = now - time::Duration::days(1);
-    params.not_after = now + time::Duration::days(825); // Apple's maximum for TLS certs
+    let not_after = now + time::Duration::days(CERT_DAYS);
+    params.not_after = not_after;
     let key = rcgen::KeyPair::generate()?;
     let cert = params.self_signed(&key)?;
     let (cert_pem, key_pem) = (cert.pem(), key.serialize_pem());
-    let json = serde_json::json!({ "host": host, "key": key_pem, "cert": cert_pem });
+    let json = serde_json::json!({ "host": host, "key": key_pem, "cert": cert_pem, "expires": not_after.unix_timestamp() });
     write_private(&path, &json.to_string())?;
     Ok((cert_pem, key_pem))
 }
@@ -489,11 +527,16 @@ fn tls_acceptor(cert_pem: &str, key_pem: &str) -> Result<TlsAcceptor, Box<dyn st
 
 // ---------- typing at the cursor ----------
 
-/// One long-lived keyboard handle on its own thread: no process is spawned per scan.
 /// A scan for the keyboard. `done` gets true once it was typed (code + Enter), false if it could not be.
 struct TypeJob {
     code: String,
     done: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// Printable text only: no control characters (Enter, Tab, Escape), line separators or invisible
+/// direction marks. A scanned code can then never press a key beyond its own text.
+fn typeable(c: char) -> bool {
+    !c.is_control() && !matches!(c, '\u{2028}' | '\u{2029}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// One long-lived keyboard handle on its own thread: no process is spawned per scan. Scans are typed
@@ -544,7 +587,7 @@ fn start_typer(press_enter: bool, dry_run: bool, no_typing: bool, log: Logger, r
                     Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                 },
             };
-            let text: String = job.code.chars().filter(|c| !c.is_control()).collect();
+            let text: String = job.code.chars().filter(|c| typeable(*c)).collect();
             let typed = if text.is_empty() {
                 true // nothing printable to type
             } else if dry_run {
@@ -593,7 +636,8 @@ struct Peer {
     kick: Arc<tokio::sync::Notify>,      // tells the connection to close (stuck, or phone removed)
     name: String,
     ip: String,
-    since: i64, // ms since epoch
+    local: bool, // opened on this computer (http://localhost), not from the network
+    since: i64,  // ms since epoch
     scans: u64,
     last_scan: Option<i64>,
     device: Option<String>, // id of the paired phone (devices.rs); None for pages
@@ -637,6 +681,7 @@ struct App {
     home: PathBuf,
     log: Logger,
     lan_base: String, // https://<lan-ip>:<port>
+    server_id: String, // see load_server_id
     tunnel_enabled: bool,
     pairing: Mutex<Pairing>,
     pair_json: Mutex<serde_json::Value>, // what /api/pair returns; rebuilt when `pairing` changes
@@ -688,8 +733,9 @@ impl App {
     fn refresh_pairing(&self) {
         let json = {
             let p = self.pairing.lock().unwrap();
-            let lan = format!("{}/scanner.html?t={}", self.lan_base, p.token);
-            let net = p.tunnel_url.as_ref().map(|u| format!("{u}/scanner.html?t={}", p.token));
+            let link = |base: &str| format!("{base}/scanner.html?t={}&s={}", p.token, self.server_id);
+            let lan = link(&self.lan_base);
+            let net = p.tunnel_url.as_deref().map(link);
             serde_json::json!({
                 "token": p.token, "url": lan, "qr": qr_data_url(&lan),
                 "tunnel": { "enabled": self.tunnel_enabled, "url": net, "qr": net.as_deref().map(qr_data_url) },
@@ -706,16 +752,18 @@ impl App {
     }
 
     /// Take away one phone's access: forget its key, disconnect it, and change the QR code's token
-    /// so the link it already has cannot pair it again. Other phones keep their own keys.
+    /// so the link it already has cannot pair it again. Other phones keep their own keys. Pages from
+    /// other computers logged in with the old token, so they are disconnected too.
     fn remove_device(&self, id: &str) {
-        let name = self.devices.lock().unwrap().get_mut(id).map(|d| d.name.clone());
-        if !self.devices.lock().unwrap().remove(id) {
-            return;
-        }
+        let mut store = self.devices.lock().unwrap();
+        let Some(name) = store.get_mut(id).map(|d| d.name.clone()) else { return };
+        store.remove(id);
+        drop(store); // locked again below, by broadcast_status
         self.recent.lock().unwrap().remove(id);
         {
             let mut peers = self.peers.lock().unwrap();
-            let open: Vec<u64> = peers.iter().filter(|(_, p)| p.device.as_deref() == Some(id)).map(|(k, _)| *k).collect();
+            let stale = |p: &Peer| p.device.as_deref() == Some(id) || (p.role != Role::Phone && !p.local);
+            let open: Vec<u64> = peers.iter().filter(|(_, p)| stale(p)).map(|(k, _)| *k).collect();
             for k in open {
                 // Dropped from the list right away, so nothing more from it is accepted.
                 if let Some(p) = peers.remove(&k) {
@@ -728,7 +776,7 @@ impl App {
             Ok(t) => self.pairing.lock().unwrap().token = t,
             Err(e) => self.log.log(&format!("could not change the pairing token: {e}")),
         }
-        self.log.log(&format!("removed device {id} ({}); pairing token changed", name.unwrap_or_default()));
+        self.log.log(&format!("removed device {id} ({}); pairing token changed", name));
         self.refresh_pairing();
         self.broadcast_status();
     }
@@ -848,9 +896,10 @@ async fn phone_scans(app: Arc<App>, conn: u64, device: String, mut rx: mpsc::Rec
         }
         let code = m["code"].as_str().unwrap_or("");
         let format = m["format"].as_str();
+        let valid = !code.is_empty() && code.chars().count() <= MAX_CODE_CHARS;
         let Some(id) = m["id"].as_u64() else {
             // Older phone page without scan ids: deliver once, no ordering or duplicate check.
-            if !code.is_empty() && code.chars().count() <= MAX_CODE_CHARS {
+            if valid {
                 let ok = app.deliver(code, format).await;
                 if ok {
                     app.scan_done(conn);
@@ -859,7 +908,7 @@ async fn phone_scans(app: Arc<App>, conn: u64, device: String, mut rx: mpsc::Rec
             }
             continue;
         };
-        if code.is_empty() || code.chars().count() > MAX_CODE_CHARS {
+        if !valid {
             ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": false, "rejected": true }));
             continue;
         }
@@ -875,13 +924,15 @@ async fn phone_scans(app: Arc<App>, conn: u64, device: String, mut rx: mpsc::Rec
             ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": true }));
             continue;
         }
-        if app.deliver(code, format).await {
+        let ok = app.deliver(code, format).await;
+        if ok {
             app.recent.lock().unwrap().entry(device.clone()).or_default().add(id);
-            ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": true }));
-            app.scan_done(conn);
         } else {
             blocked = Some(id);
-            ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": false }));
+        }
+        ack(serde_json::json!({ "type": "ack", "id": id, "code": code, "delivered": ok }));
+        if ok {
+            app.scan_done(conn);
         }
     }
 }
@@ -890,6 +941,20 @@ async fn phone_scans(app: Arc<App>, conn: u64, device: String, mut rx: mpsc::Rec
 
 fn asset(content_type: &'static str, body: impl Into<axum::body::Body>) -> Response {
     ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "no-cache")], body.into()).into_response()
+}
+
+/// Added to every answer: no guessing of file types, the pairing code in the address is never passed
+/// on to other sites, and the pages cannot be shown inside another site's page.
+async fn security_headers(mut res: Response) -> Response {
+    use axum::http::HeaderValue;
+    let h = res.headers_mut();
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    if h.get(header::CONTENT_TYPE).is_some_and(|v| v.as_bytes().starts_with(b"text/html")) {
+        h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'"));
+    }
+    res
 }
 
 fn is_loopback(ip: IpAddr) -> bool {
@@ -917,7 +982,7 @@ async fn manifest(State(app): State<Arc<App>>, Query(q): Query<HashMap<String, S
             { "src": "/logo.svg", "sizes": "any", "type": "image/svg+xml" },
         ],
     });
-    ([(header::CONTENT_TYPE, "application/manifest+json"), (header::CACHE_CONTROL, "no-cache")], body.to_string()).into_response()
+    ([(header::CONTENT_TYPE, "application/manifest+json"), (header::CACHE_CONTROL, "no-store")], body.to_string()).into_response()
 }
 
 /// Headers that a proxy or tunnel adds. Their presence means the request came from outside, even if
@@ -946,7 +1011,7 @@ async fn pair(
     if !is_local_request(peer, &headers) && !has_token {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "token required" }))).into_response();
     }
-    Json(app.pair_json.lock().unwrap().clone()).into_response()
+    ([(header::CACHE_CONTROL, "no-store")], Json(app.pair_json.lock().unwrap().clone())).into_response()
 }
 
 /// WebSocket close codes the phone page understands.
@@ -981,14 +1046,16 @@ async fn ws(
             if let Some(n) = &chosen_name {
                 d.name = n.clone();
             }
-            d.clone()
+            (d.id.clone(), d.name.clone())
         });
-        if let Some(d) = known {
+        if let Some((id, known_name)) = known {
             store.save();
-            name = d.name.clone();
-            device = Some(d.id);
+            name = known_name;
+            device = Some(id);
         } else if token_ok {
             let Ok(d) = store.enroll(name.clone(), now) else {
+                drop(store);
+                app.log.log("pairing refused: could not save, or too many paired phones (remove unused ones on the pairing page)");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             };
             new_key = Some(d.key);
@@ -1016,19 +1083,22 @@ async fn ws(
             ip = format!("{} (internet)", real.chars().take(45).collect::<String>());
         }
     }
+    let local = is_local_request(addr, &headers);
     upgrade
         .max_message_size(4096)
-        .on_upgrade(move |socket| client(app, socket, role, name, ip, device, new_key))
+        .max_frame_size(4096)
+        .on_upgrade(move |socket| client(app, socket, role, name, ip, local, device, new_key))
 }
 
-async fn client(app: Arc<App>, socket: WebSocket, role: Role, name: String, ip: String, device: Option<String>, new_key: Option<String>) {
+#[allow(clippy::too_many_arguments)]
+async fn client(app: Arc<App>, socket: WebSocket, role: Role, name: String, ip: String, local: bool, device: Option<String>, new_key: Option<String>) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Message>(PEER_BUFFER);
     let kick = Arc::new(tokio::sync::Notify::new());
     let id = app.next_id.fetch_add(1, Ordering::Relaxed);
     // Tell the phone the name it is listed under and, when it was just paired, its key to keep.
-    let _ = tx.try_send(Message::Text(serde_json::json!({ "type": "hello", "name": name, "key": new_key }).to_string().into()));
-    let peer = Peer { role, tx: tx.clone(), kick: kick.clone(), name, ip, since: now_ms(), scans: 0, last_scan: None, device: device.clone() };
+    let _ = tx.try_send(Message::Text(serde_json::json!({ "type": "hello", "name": name, "key": new_key, "sid": app.server_id }).to_string().into()));
+    let peer = Peer { role, tx: tx.clone(), kick: kick.clone(), name, ip, local, since: now_ms(), scans: 0, last_scan: None, device: device.clone() };
     app.peers.lock().unwrap().insert(id, peer);
     app.broadcast_status();
 
@@ -1129,6 +1199,7 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         home: home.clone(),
         log: log.clone(),
         lan_base: format!("https://{host}:{port}"),
+        server_id: load_server_id(&home)?,
         tunnel_enabled: tunnel_on,
         pairing: Mutex::new(Pairing { token, tunnel_url: None }),
         pair_json: Mutex::new(serde_json::Value::Null),
@@ -1170,11 +1241,12 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         .route("/sw.js", get(|| async { asset("text/javascript; charset=utf-8", SW_JS) }))
         .route("/icon-192.png", get(|| async { asset("image/png", ICON_192_PNG) }))
         .route("/icon-512.png", get(|| async { asset("image/png", ICON_512_PNG) }))
-        .route("/manifest.webmanifest", get(manifest))
+        .route("/icon-180.png", get(|| async { asset("image/png", ICON_180_PNG) }))
         .route("/logo.svg", get(|| async { asset("image/svg+xml", LOGO_SVG) }))
-        .route("/icon-180.png", get(|| async { asset("image/png", ICON_PNG) }))
+        .route("/manifest.webmanifest", get(manifest))
         .route("/api/pair", get(pair))
         .route("/ws", get(ws))
+        .layer(axum::middleware::map_response(security_headers))
         .with_state(app.clone());
 
     let listener = TcpListener::bind(("0.0.0.0", port)).await?;
@@ -1184,8 +1256,7 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     log.log(&format!("listening on port {port}, LAN address {host}, tunnel {}", if tunnel_on { "on" } else { "off" }));
 
     if tunnel_on {
-        let (home, log, app) = (home.clone(), log.clone(), app.clone());
-        tokio::spawn(tunnel::run(home, port, log, move |url| app.set_tunnel_url(url)));
+        tokio::spawn(tunnel::run(home.clone(), port, log.clone(), move |url| app.set_tunnel_url(url)));
     }
 
     // Plain HTTP from another device is only ever answered with a redirect to HTTPS.
@@ -1194,12 +1265,18 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         axum::response::Redirect::temporary(&format!("https://{host}{uri}"))
     });
 
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     let accept_loop = async {
         loop {
-            let Ok((tcp, peer)) = listener.accept().await else { continue };
+            let Ok(slot) = slots.clone().acquire_owned().await else { return };
+            let Ok((tcp, peer)) = listener.accept().await else {
+                tokio::time::sleep(Duration::from_millis(100)).await; // e.g. out of file handles: do not spin
+                continue;
+            };
             let _ = tcp.set_nodelay(true); // send each scan immediately, no Nagle batching
             let (acceptor, router, to_https) = (acceptor.clone(), router.clone(), to_https.clone());
             tokio::spawn(async move {
+                let _slot = slot; // freed when the connection ends
                 // One port, two protocols: a TLS handshake starts with byte 0x16, plain HTTP with a letter.
                 let mut first = [0u8; 1];
                 let Ok(Ok(1)) = tokio::time::timeout(Duration::from_secs(10), tcp.peek(&mut first)).await else { return };
@@ -1234,7 +1311,10 @@ where
         req.extensions_mut().insert(ConnectInfo(peer));
         router.clone().oneshot(req)
     });
+    // A connection that never sends its request is dropped after 10 s.
     let _ = hyper::server::conn::http1::Builder::new()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(Duration::from_secs(10))
         .serve_connection(TokioIo::new(io), svc)
         .with_upgrades()
         .await;

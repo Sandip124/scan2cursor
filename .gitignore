@@ -4,6 +4,7 @@ bin/
 /scan2cursor
 /scan2cursor.exe
 .token
+.server-id
 .cert.json
 .tunnel.json
 settings.json

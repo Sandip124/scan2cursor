@@ -3,113 +3,67 @@
 # Scan2Cursor
 
 Use your phone as a barcode scanner for your computer. Scan a barcode with the phone and it is
-typed, followed by Enter, wherever the cursor is on the computer: a billing app, a spreadsheet, a
-web form.
+typed, followed by Enter, wherever the cursor is: a billing app, a spreadsheet, a web form.
 
-- **Nothing to install on the phone.** It runs in the phone's browser.
-- **Several phones at once.** Each one is listed on the pairing page and can be removed there.
-- **Fast, offline barcode reading.** Uses the phone's built-in reader where available, otherwise a
-  WebAssembly decoder served by the computer; torch and zoom buttons; installs to the home screen.
-- **No scan is lost.** Scans wait on the phone when the connection drops and are typed, in order,
-  when it is back. The OK beep only sounds once the code is really typed.
-- **Same Wi-Fi, or any network.** An optional internet tunnel lets a phone on mobile data connect.
-- **One small program.** Written in Rust, about 2 MB, no runtime to install.
+- **Nothing to install on the phone.** It runs in the browser and can be added to the home screen.
+- **No scan is lost.** Scans wait on the phone while the connection is down and are typed, in order, when it is back.
+- **Several phones at once**, on the same Wi-Fi or over the internet.
+- **One small program.** Rust, about 3 MB, no runtime.
 
-Tested on macOS. Windows and Linux are supported by the code and scripts but have not been tested.
+Tested on macOS. Windows and Linux are supported but not tested.
 
 ## Install
 
-You need either [Rust](https://rustup.rs) (the installer builds the program) or a prebuilt
-`scan2cursor` binary placed in this folder.
+Needs [Rust](https://rustup.rs), or a prebuilt `scan2cursor` / `scan2cursor.exe` placed in this folder.
 
-| OS | Run from this folder |
-|---|---|
-| macOS / Linux | `./scripts/install.sh` |
-| Windows | `scripts\install.bat` |
+| | macOS / Linux | Windows |
+|---|---|---|
+| Install | `./scripts/setup.sh install` | double-click `scripts\setup.bat`, choose **I** |
+| Update after a code change | `./scripts/setup.sh update` | install again |
+| Uninstall | `./scripts/setup.sh uninstall` | `scripts\setup.bat`, choose **U** |
 
-The installer creates a pairing token for this computer, sets the server to start at login, and
-opens the pairing page.
+The installer makes a pairing token, starts the server at every login, and opens the pairing page.
 
-**macOS:** when asked, switch on **Scan2Cursor** in System Settings → Privacy & Security →
-Accessibility. Without it the program cannot type.
+**macOS:** switch on **Scan2Cursor** in System Settings → Privacy & Security → Accessibility.
+Without it nothing is typed. After uninstalling, remove that entry and the certificate
+**Scan2Cursor Local Signing** (Keychain Access → login) by hand.
 
 ## Pair a phone
 
 1. Open <http://localhost:8443/> on the computer.
-2. Scan the QR code with the phone's camera and open the link. Use the **Same Wi-Fi** tab, or
-   **From anywhere** for a phone on mobile data (see below).
-3. On the **Same Wi-Fi** code, the phone warns once that the connection is not private. That is
-   expected (the certificate is made by your computer); choose to continue. The **From anywhere**
-   code and the page on the computer have no warning.
-4. Tap **SCAN** and point at a barcode.
+2. Scan the QR code with the phone's camera and open the link.
+   - **Same Wi-Fi:** the phone warns once that the connection is not private; continue.
+   - **From anywhere:** for a phone on mobile data. Turn it on with `./scan2cursor tunnel on`.
+3. Tap **SCAN** and point at a barcode.
 
-After that first time, pairing happens inside the scanner page: whenever the phone is not paired
-(removed, new QR code, home-screen app opened for the first time), it opens its camera and reads
-the QR code on the computer by itself. If the **From anywhere** address changed (it does on every
-restart), tap **SCAN** in the installed app and point at the new QR code: it reconnects, still paired. Under each QR code the pairing page shows its link, with a **Copy** button.
+When the phone is not paired, the scanner page reads the QR code itself: point it at the computer.
+The **From anywhere** address changes at every restart; tap **SCAN** in the app and point at the
+new QR code to reconnect.
 
-## Remove a phone
-
-Click **Remove** next to it on the pairing page. That phone is disconnected and its link stops
-working; the QR code changes, and your other phones keep working without scanning again.
-
-## Phone on mobile data or another Wi-Fi
-
-```
-./scan2cursor tunnel on
-```
-
-The pairing page's **From anywhere** tab then shows a QR code. It goes through a free
-Cloudflare tunnel: no account, no router settings. The address changes whenever the server
-restarts, so phones scan the new code after a reboot. Turn it off with `tunnel off`.
+**Remove** on the pairing page disconnects one phone. The others keep working.
 
 ## Commands
 
-Run from this folder. On Windows use `scan2cursor.exe`; there, `scan2cursor.exe` alone (or a
-double-click) starts the server hidden in the background, so the command window can be closed.
+Run from this folder. On Windows use `scan2cursor.exe`.
 
 | Command | What it does |
 |---|---|
-| `./scan2cursor status` | Is it running? Shows the page address, internet address and log file |
+| `./scan2cursor status` | Running? Shows addresses and the log file |
 | `./scan2cursor start` / `stop` / `restart` | Control the background server |
 | `./scan2cursor tunnel on` / `off` / `status` | Internet tunnel for phones on other networks |
-| `./scan2cursor new-token` | Start over: new QR code, all paired phones forgotten |
-| `./scan2cursor run` | Run in this terminal instead of the background (shows errors) |
-| `./scan2cursor help` | List the commands |
+| `./scan2cursor new-token` | New QR code, all phones forgotten |
+| `./scan2cursor run` | Run in this window (shows errors) |
 
-The server starts by itself at login and restarts if it crashes.
-
-## Update
-
-After changing the code, on macOS or Linux:
-
-```
-./scripts/update.sh
-```
-
-It rebuilds, swaps in the new program and restarts it. Phones stay paired.
-
-## Uninstall
-
-1. Run `./scripts/uninstall.sh` (Windows: `scripts\uninstall.bat`). This stops the server and the
-   tunnel and removes the auto-start.
-2. Delete this whole folder (the one this README is in).
-
-On a Mac, two things live outside the folder and can be removed by hand:
-
-- System Settings → Privacy & Security → Accessibility: select **Scan2Cursor** and click **−**.
-- Keychain Access → login keychain: delete the certificate **Scan2Cursor Local Signing**.
+**Windows:** `scan2cursor.exe` alone, or a double-click, starts the server hidden in the background.
 
 ## Security
 
-- `.token` is the pairing secret in the QR code: anyone who has it can pair a phone and type on
-  this computer. `.devices.json` holds each paired phone's key, and `.cert.json` the HTTPS private
-  key. All three stay on this computer and are ignored by git: never share or commit them.
-- A phone that should lose access: **Remove** it on the pairing page. If the QR link may have
-  leaked, run `./scan2cursor new-token`.
-- With the tunnel on, traffic passes through Cloudflare, which can see the scanned codes.
+- `.token`, `.devices.json` and `.cert.json` are secrets. They stay on this computer and are
+  ignored by git. Anyone with the pairing link can type on this computer.
+- Link leaked: `./scan2cursor new-token`.
+- With the tunnel on, Cloudflare can see the scanned codes.
 
 ## More
 
-- Full guide (several phones, troubleshooting, options, files): [docs/GUIDE.md](docs/GUIDE.md)
-- Logs: `logs/scan2cursor.log`
+[docs/GUIDE.md](docs/GUIDE.md): scanner page, troubleshooting, options, files, building.
+Logs: `logs/scan2cursor.log`.

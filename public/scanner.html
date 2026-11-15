@@ -129,6 +129,10 @@ const buzz = p => navigator.vibrate && navigator.vibrate(p);
 // the one read from the computer's QR code (the installed app keeps opening from its saved copy).
 let server = location.host;
 try { server = localStorage.getItem('s2cServer') || server; } catch {}
+// The paired computer's id (it tells us when we connect). A QR code must carry the same id before
+// this phone follows it to another address: its key is never sent to a stranger's address.
+let serverId = '';
+try { serverId = localStorage.getItem('s2cSid') || ''; } catch {}
 const isLocalHost = h => /^(\d{1,3}\.){3}\d{1,3}$|^localhost$|^\[/.test(h);
 function showVia() {
 const viaWifi = isLocalHost(server.replace(/:\d+$/, ''));
@@ -273,6 +277,7 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.type === 'hello') {
       $('nm').textContent = m.name;
+      if (m.sid) { serverId = m.sid; try { localStorage.setItem('s2cSid', serverId); } catch {} }
       if (m.key) { myKey = m.key; try { localStorage.setItem('bbKey', myKey); } catch {} $('last').textContent = '✓ Paired'; }
     }
     if (m.type === 'status') { desktops = m.desktops; showStatus(); }
@@ -450,6 +455,12 @@ function useQr(text) {
   // A Wi-Fi address other than this page's: its certificate must be accepted in the browser first, so go there.
   if (isLocalHost(u.hostname) && u.origin !== location.origin) { disarm(); $('last').textContent = 'Opening…'; location.href = u.href; return true; }
   if (!myKey && badTokens.has(token)) { $('last').textContent = 'That QR code is out of date. Use the one on the computer now.'; return true; }
+  // A paired phone moving to another address would send its key there. Only for our own computer.
+  if (myKey && u.host !== server) {
+    const known = serverId && u.searchParams.get('s') === serverId;
+    if (!known && online) { $('last').textContent = 'That QR code is from another computer. Ignored.'; return true; }
+    if (!known && !confirm(`Connect this phone to a new address?\n\n${u.host}\n\nOnly accept the QR code shown on YOUR computer.`)) { disarm(); return true; }
+  }
   // This page's own address, or the computer's current internet address: connect to it from here.
   server = u.host; t = token; unpaired = false;
   try { localStorage.setItem('s2cServer', server); } catch {}

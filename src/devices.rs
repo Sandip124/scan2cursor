@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const MAX_DEVICES: usize = 64; // paired phones; more are refused until one is removed
 const FILE: &str = ".devices.json"; // holds secrets: private file, never committed
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -57,6 +58,9 @@ impl Store {
 
     /// Pair a new phone: it gets an id (shown in lists) and a secret key (its login from now on).
     pub fn enroll(&mut self, name: String, now: i64) -> std::io::Result<Device> {
+        if self.list.len() >= MAX_DEVICES {
+            return Err(std::io::Error::other("too many paired phones"));
+        }
         let device = Device { id: crate::random_hex(4)?, key: crate::random_hex(16)?, name, created: now, last_seen: now };
         self.list.push(device.clone());
         self.save();
