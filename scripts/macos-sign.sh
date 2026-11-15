@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# macOS: sign barcode-bridge with a stable local certificate so the Accessibility permission survives
+# macOS: sign scan2cursor with a stable local certificate so the Accessibility permission survives
 # rebuilds and updates. Without this, every build gets a new ad-hoc signature and macOS treats it
 # as a new app that must be allowed again.
 #
-# Creates a self-signed code-signing certificate "Barcode Bridge Local Signing" in the login keychain
+# Creates a self-signed code-signing certificate "Scan2Cursor Local Signing" in the login keychain
 # (once; only usable on this Mac), then signs the binary with it.
-# Usage: scripts/macos-sign.sh path/to/BarcodeBridge.app   (or a plain binary)
+# Usage: scripts/macos-sign.sh path/to/Scan2Cursor.app   (or a plain binary)
 set -euo pipefail
-BIN="${1:?usage: macos-sign.sh path/to/BarcodeBridge.app}"
-NAME="Barcode Bridge Local Signing"
+BIN="${1:?usage: macos-sign.sh path/to/Scan2Cursor.app}"
+NAME="Scan2Cursor Local Signing"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 OPENSSL=/usr/bin/openssl   # system LibreSSL: its .p12 format is what `security import` expects
 
@@ -36,5 +36,5 @@ EOF
   security import "$T/id.p12" -k "$KEYCHAIN" -P "$PASS" -T /usr/bin/codesign >/dev/null
 fi
 
-codesign --force --sign "$NAME" --identifier com.barcodebridge "$BIN"
-echo "Signed $BIN as com.barcodebridge."
+codesign --force --sign "$NAME" --identifier com.scan2cursor "$BIN"
+echo "Signed $BIN as com.scan2cursor."

@@ -1,10 +1,12 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Scanner</title>
+<title>Scan2Cursor Scanner</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#111111">
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
 <style>
   html,body{height:100%}
   body{margin:0;font:16px system-ui;background:#111;color:#fff;display:flex;flex-direction:column}
@@ -39,12 +41,16 @@ const beepOk = () => tone(2000, 120);
 const beepErr = () => { tone(220, 180, 'square', 0.3); tone(220, 180, 'square', 0.3, 0.25); };
 const buzz = p => navigator.vibrate && navigator.vibrate(p);
 
-let online = false, desktops = 0;
+let online = false, desktops = 0, unpaired = false;
 function showStatus() {
   const ok = online && desktops > 0;
   $('dot').className = ok ? 'ok' : '';
-  $('st').textContent = !online ? 'offline' : desktops ? 'ready' : 'computer cannot type yet';
+  $('st').textContent = unpaired ? 'not paired' : !online ? 'offline' : desktops ? 'ready' : 'computer cannot type yet';
 }
+// This phone's own key, given by the computer when it was paired. The QR code's token (t) is only
+// needed for that first pairing.
+let myKey = '';
+try { myKey = localStorage.getItem('bbKey') || ''; } catch {}
 // Name shown in the desktop's device list. Empty = the server picks one (e.g. "iPhone · Safari").
 let myName = '';
 try { myName = localStorage.getItem('bbName') || ''; } catch {}
@@ -57,12 +63,27 @@ $('nm').onclick = () => {
 };
 function connect() {
   const name = myName ? '&name=' + encodeURIComponent(myName) : '';
-  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=phone&t=${encodeURIComponent(t)}${name}`);
+  const key = myKey ? '&k=' + encodeURIComponent(myKey) : '';
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=phone&t=${encodeURIComponent(t)}${key}${name}`);
   ws.onopen = () => { online = true; showStatus(); };
-  ws.onclose = () => { online = false; showStatus(); setTimeout(connect, 1000); };
+  ws.onclose = e => {
+    online = false;
+    // 4403: removed on the computer. 4401: key unknown and the QR code has changed since.
+    if (e.code === 4403 || e.code === 4401) {
+      unpaired = true; myKey = '';
+      try { localStorage.removeItem('bbKey'); } catch {}
+      $('last').textContent = (e.code === 4403 ? 'This phone was removed on the computer.' : 'This phone is not paired with the computer.')
+        + ' Scan the QR code on the computer again to connect.';
+      return showStatus(); // do not keep retrying
+    }
+    showStatus(); setTimeout(connect, 1000);
+  };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
-    if (m.type === 'hello') $('nm').textContent = m.name;
+    if (m.type === 'hello') {
+      $('nm').textContent = m.name;
+      if (m.key) { myKey = m.key; try { localStorage.setItem('bbKey', myKey); } catch {} }
+    }
     if (m.type === 'status') { desktops = m.desktops; showStatus(); }
     if (m.type === 'ack') {
       if (m.delivered) { beepOk(); buzz(80); $('last').textContent = '✓ ' + m.code; }
@@ -80,7 +101,7 @@ function arm() {
 function onDecode(code, result) {
   if (!armed) return;
   disarm();
-  if (ws.readyState !== 1) { beepErr(); $('last').textContent = '✗ offline'; return; }
+  if (ws.readyState !== 1) { beepErr(); if (!unpaired) $('last').textContent = '✗ offline'; return; }
   ws.send(JSON.stringify({ type: 'scan', code, format: result?.result?.format?.formatName }));
 }
 

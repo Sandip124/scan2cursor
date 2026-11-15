@@ -107,27 +107,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "barcode-bridge"
-version = "2.0.0"
-dependencies = [
- "axum",
- "base64 0.23.1",
- "enigo",
- "futures-util",
- "getrandom 0.4.3",
- "hyper",
- "hyper-util",
- "qrcode",
- "rcgen",
- "serde",
- "serde_json",
- "time",
- "tokio",
- "tokio-rustls",
- "tower",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -931,6 +910,27 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "scan2cursor"
+version = "2.0.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "enigo",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hyper",
+ "hyper-util",
+ "qrcode",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+]
 
 [[package]]
 name = "serde"

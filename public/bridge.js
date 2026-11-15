@@ -1,9 +1,9 @@
 // Drop into any desktop page:
 //   <script src="https://localhost:8443/bridge.js"></script>
-//   BarcodeBridge.connect({ input: '#sku', token: '<TOKEN>', autoSubmit: true });
+//   Scan2Cursor.connect({ input: '#sku', token: '<TOKEN>', autoSubmit: true });
 (function () {
   const base = (document.currentScript && new URL(document.currentScript.src).host) || location.host;
-  window.BarcodeBridge = {
+  window.Scan2Cursor = {
     connect({ input, token, autoSubmit = false, onScan, onStatus }) {
       const el = typeof input === 'string' ? document.querySelector(input) : input;
       let ws, retry = 500;

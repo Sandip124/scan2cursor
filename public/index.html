@@ -1,10 +1,12 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Barcode scanner</title>
+<title>Scan2Cursor</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
 <style>
   body{font:16px system-ui;max-width:420px;margin:3rem auto;padding:0 1rem;text-align:center;color:#222}
-  h1{font-size:1.4rem;margin-bottom:.3rem}
+  .logo{display:block;margin:0 auto .6rem;border-radius:14px}
+  h1{font-size:1.4rem;margin:0 0 .3rem}
   h2{font-size:1rem;margin:1.6rem 0 .2rem;text-align:left}
   .tabs{display:flex;gap:.3rem;margin:1.2rem 0 0;padding:.25rem;background:#f0f0f0;border-radius:10px}
   .tabs button{flex:1;padding:.55rem .4rem;font:inherit;font-weight:600;color:#555;background:none;border:0;border-radius:8px;cursor:pointer}
@@ -14,30 +16,30 @@
   .qr img{border-radius:12px;margin:.6rem 0 0}
   .qr .note{display:block;margin-top:.3rem}
   code{background:#f2f2f2;border-radius:4px;padding:.1rem .3rem}
-  .row{display:flex;justify-content:space-between;padding:.6rem .2rem;border-top:1px solid #eee}
-  .on{color:#0a7d33;font-weight:600}.off{color:#c0392b;font-weight:600}
+  #blocked{display:block;margin:.8rem 0;padding:.7rem .8rem;text-align:left;color:#7a1f14;background:#fdecea;border-radius:8px}
+  #blocked[hidden]{display:none}
   #devices{list-style:none;margin:0;padding:0;text-align:left}
   #devices li{display:flex;gap:.6rem;align-items:baseline;padding:.6rem .2rem;border-top:1px solid #eee}
   #devices .name{font-weight:600;flex:1;min-width:0;overflow-wrap:anywhere}
   #devices .meta{color:#777;font-size:.85rem;text-align:right;white-space:pre}
   #devices .empty{color:#777;justify-content:center}
-  input{width:100%;padding:.7rem;font-size:1.1rem;box-sizing:border-box;margin-top:1.2rem;border:1px solid #ccc;border-radius:8px}
+  #devices .offline .name{color:#777;font-weight:500}
+  #devices button{align-self:center;padding:.3rem .6rem;font:inherit;font-size:.85rem;color:#b3261e;background:#fff;border:1px solid #e3b5b1;border-radius:8px;cursor:pointer}
+  #devices button:hover{background:#fdecea}
   small{color:#777}
 </style>
-<h1>Barcode scanner</h1>
-<small>Scan a code with each phone's camera. Any number of phones can connect.</small>
+<img class="logo" src="/logo.svg" width="64" height="64" alt="">
+<h1>Scan2Cursor</h1>
+<small>Scan on your phone, typed on this computer. Scan a code below with each phone's camera.</small>
 <div class="tabs" role="tablist" aria-label="How the phone connects">
   <button role="tab" id="tab-lan" aria-controls="lan" aria-selected="true">Same Wi-Fi</button>
   <button role="tab" id="tab-net" aria-controls="net" aria-selected="false">From anywhere</button>
 </div>
 <div class="qr" id="lan" role="tabpanel" aria-labelledby="tab-lan"><div class="img"></div><small class="note">Phone on the same Wi-Fi as this computer. Fastest.</small></div>
 <div class="qr" id="net" role="tabpanel" aria-labelledby="tab-net" hidden><div class="img"></div><small class="note"></small></div>
-<div class="row"><span>Typing at cursor</span><span id="ty" class="off">not running</span></div>
-<small id="tyhelp" hidden>This computer is not allowed to type yet. On a Mac: System Settings → Privacy &amp; Security → Accessibility → switch on <b>Barcode Bridge</b>. It starts working by itself within a few seconds.</small>
-<h2>Connected devices (<span id="count">0</span>)</h2>
-<ul id="devices"><li class="empty">No devices connected</li></ul>
-<input id="test" placeholder="Test: click here, then scan">
-<small id="res"></small>
+<small id="blocked" role="alert" hidden>Scans cannot be typed yet: this computer has not allowed it. On a Mac: System Settings → Privacy &amp; Security → Accessibility → switch on <b>Scan2Cursor</b>. It starts working by itself within a few seconds.</small>
+<h2>Devices (<span id="count">0 connected</span>)</h2>
+<ul id="devices"><li class="empty">No phones paired yet</li></ul>
 <script>
 // Tabs: one QR code at a time. The last choice is remembered.
 const tabs = [...document.querySelectorAll('.tabs [role=tab]')];
@@ -69,41 +71,50 @@ selectTab(savedTab);
     const box = document.querySelector('#net .img'), note = document.querySelector('#net .note'), t = p.tunnel || {};
     if (t.qr) { qrImg(box, t.qr, 'QR code for phones on any network'); note.textContent = 'Phone on mobile data or another Wi-Fi. Goes through Cloudflare; this code changes when the server restarts.'; }
     else if (t.enabled) { box.replaceChildren(); note.textContent = 'Connecting to the internet…'; }
-    else { box.replaceChildren(); note.innerHTML = 'Off. To allow it, run <code>barcode-bridge tunnel on</code> on this computer.'; }
+    else { box.replaceChildren(); note.innerHTML = 'Off. To allow it, run <code>scan2cursor tunnel on</code> on this computer.'; }
   }
   showPair();
   // The internet address arrives a few seconds after start, and changes if the tunnel restarts.
   const reloadPair = async () => { const r = await fetch('/api/pair?t=' + encodeURIComponent(p.token)); if (r.ok) { p = await r.json(); showPair(); } };
-  const set = (id, on, a, b) => { const e = document.getElementById(id); e.textContent = on ? a : b; e.className = on ? 'on' : 'off'; };
 
   const ago = ms => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
     return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`; };
   let devices = [];
   // Names come from the phones: build with textContent only, never innerHTML.
   const el = (tag, cls, text) => { const e = document.createElement(tag); e.className = cls; e.textContent = text; return e; };
+  let ws;
+  function removeDevice(d) {
+    if (!confirm(`Remove "${d.name}"?\n\nIt is disconnected and can no longer scan. To use it again, scan the QR code with it.\nThe QR code changes; your other phones keep working.`)) return;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'remove', id: d.id }));
+  }
   function render() {
     const ul = document.getElementById('devices');
-    document.getElementById('count').textContent = devices.length;
-    if (!devices.length) return ul.replaceChildren(el('li', 'empty', 'No devices connected'));
+    const online = devices.filter(d => d.online).length;
+    document.getElementById('count').textContent = `${online} connected` + (devices.length > online ? `, ${devices.length - online} offline` : '');
+    if (!devices.length) return ul.replaceChildren(el('li', 'empty', 'No phones paired yet'));
     ul.replaceChildren(...devices.map(d => {
       const li = document.createElement('li');
+      if (!d.online) li.className = 'offline';
       const scans = `${d.scans} scan${d.scans === 1 ? '' : 's'}${d.lastScan ? ', last ' + ago(d.lastScan) : ''}`;
-      li.append(el('span', 'name', `${d.kind === 'phone' ? '📱' : '🖥'} ${d.name}`),
-                el('span', 'meta', `${d.ip} · since ${ago(d.since)}\n${scans}`));
+      const meta = d.online ? `${d.ip} · connected ${ago(d.since)}\n${scans}` : `offline\nlast seen ${ago(d.lastSeen)}`;
+      li.append(el('span', 'name', `${d.kind === 'phone' ? '📱' : '🖥'} ${d.name}`), el('span', 'meta', meta));
+      if (d.removable) {
+        const b = el('button', '', 'Remove');
+        b.setAttribute('aria-label', `Remove ${d.name}`);
+        b.onclick = () => removeDevice(d);
+        li.append(b);
+      }
       return li;
     }));
   }
   setInterval(render, 10000); // keep the "ago" times fresh
 
   const open = () => {
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=monitor&t=${encodeURIComponent(p.token)}`);
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=monitor&t=${encodeURIComponent(p.token)}`);
     ws.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'pair') return reloadPair(); if (m.type !== 'status') return;
-      set('ty', m.typers > 0, 'ready', 'not allowed'); document.getElementById('tyhelp').hidden = m.typers > 0; devices = m.devices || []; render(); };
+      document.getElementById('blocked').hidden = m.typers > 0; devices = m.devices || []; render(); };
     ws.onclose = () => { devices = []; render(); setTimeout(() => { reloadPair(); open(); }, 1500); };
   };
   open();
-  // The test box is filled by real keystrokes only (same as any other app).
-  const t = document.getElementById('test');
-  t.addEventListener('keydown', e => { if (e.key === 'Enter' && t.value) { document.getElementById('res').textContent = 'Received: ' + t.value; t.value = ''; } });
 })();
 </script>

@@ -155,7 +155,7 @@ fn parse_url(line: &str) -> Option<String> {
 pub async fn run(home: PathBuf, port: u16, log: Logger, on_url: impl Fn(Option<String>)) {
     kill_stale(&home);
     let Some(exe) = find(&home) else {
-        log.log("tunnel is on but cloudflared was not found; run: barcode-bridge tunnel on");
+        log.log("tunnel is on but cloudflared was not found; run: scan2cursor tunnel on");
         return;
     };
     let mut backoff = 2;

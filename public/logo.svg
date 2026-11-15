@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Scan2Cursor logo">
+  <rect width="512" height="512" rx="112" fill="#111"/>
+  <g fill="#fff">
+    <rect x="96" y="128" width="22" height="232" rx="3"/>
+    <rect x="134" y="128" width="10" height="232" rx="3"/>
+    <rect x="160" y="128" width="32" height="232" rx="3"/>
+    <rect x="208" y="128" width="10" height="232" rx="3"/>
+    <rect x="234" y="128" width="22" height="232" rx="3"/>
+    <rect x="272" y="128" width="10" height="232" rx="3"/>
+    <rect x="298" y="128" width="32" height="232" rx="3"/>
+    <rect x="346" y="128" width="10" height="232" rx="3"/>
+    <rect x="372" y="128" width="44" height="232" rx="3"/>
+  </g>
+  <path d="M286 250 L286 432 L330 392 L360 458 L398 441 L368 376 L428 376 Z"
+        fill="#3d6" stroke="#111" stroke-width="20" stroke-linejoin="round"/>
+</svg>

@@ -1,19 +1,20 @@
-// Barcode bridge: the phone scans a barcode, and it is typed + Enter wherever the desktop cursor is.
+// Scan2Cursor: the phone scans a barcode, and it is typed + Enter wherever the desktop cursor is.
 // Phone on the same Wi-Fi, or anywhere via the optional internet tunnel (tunnel.rs).
 // One small binary: HTTPS + WebSocket server and keyboard typer.
 //
-// Usage:  barcode-bridge [run]                    run the server in this terminal
-//         barcode-bridge start|stop|restart|status control the auto-start background server
-//         barcode-bridge tunnel on|off|status     reach this computer from any network
-//         barcode-bridge new-token [--no-restart] make a new pairing token (restarts the server)
+// Usage:  scan2cursor [run]                    run the server in this terminal
+//         scan2cursor start|stop|restart|status control the auto-start background server
+//         scan2cursor tunnel on|off|status     reach this computer from any network
+//         scan2cursor new-token [--no-restart] make a new pairing token (restarts the server)
 // Env:    PORT (default 8443), HOST_IP (override LAN IP), ENTER=0 (no Enter after scan), TUNNEL=1/0,
 //         DRY_RUN=1 (log instead of typing), TOKEN (fixed token), BB_HOME (data folder; default: next to binary)
 
+mod devices;
 mod tunnel;
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
         ConnectInfo, Query, State,
     },
     http::{header, StatusCode},
@@ -50,6 +51,8 @@ const INDEX_HTML: &str = include_str!("../public/index.html");
 const SCANNER_HTML: &str = include_str!("../public/scanner.html");
 const BRIDGE_JS: &str = include_str!("../public/bridge.js");
 const HTML5_QRCODE_JS: &str = include_str!("../public/vendor/html5-qrcode.min.js");
+const LOGO_SVG: &str = include_str!("../public/logo.svg");
+const ICON_PNG: &[u8] = include_bytes!("../public/icon-180.png");
 const MAX_CODE_CHARS: usize = 512;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
@@ -60,7 +63,7 @@ fn home_dir() -> PathBuf {
         return PathBuf::from(d);
     }
     let Ok(exe) = std::env::current_exe() else { return PathBuf::from(".") };
-    // macOS app bundle (BarcodeBridge.app/Contents/MacOS/barcode-bridge): data lives next to the .app.
+    // macOS app bundle (Scan2Cursor.app/Contents/MacOS/scan2cursor): data lives next to the .app.
     let bundle = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"));
     bundle
         .and_then(Path::parent)
@@ -75,10 +78,10 @@ impl Logger {
     fn open(home: &Path) -> Self {
         let dir = home.join("logs");
         let _ = fs::create_dir_all(&dir);
-        let path = dir.join("barcode-bridge.log");
+        let path = dir.join("scan2cursor.log");
         // Keep the log small: roll over to .old once it passes 1 MB.
         if fs::metadata(&path).map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false) {
-            let _ = fs::rename(&path, dir.join("barcode-bridge.log.old"));
+            let _ = fs::rename(&path, dir.join("scan2cursor.log.old"));
         }
         let file = fs::OpenOptions::new().create(true).append(true).open(path).ok();
         Logger(Arc::new(Mutex::new(file)))
@@ -112,10 +115,15 @@ fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
     opts.open(path)?.write_all(data.as_bytes())
 }
 
-fn generate_token(home: &Path) -> std::io::Result<String> {
-    let mut buf = [0u8; 16];
+/// `bytes` random bytes as hex, from the operating system's secure random source.
+fn random_hex(bytes: usize) -> std::io::Result<String> {
+    let mut buf = vec![0u8; bytes];
     getrandom::fill(&mut buf).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let token: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn generate_token(home: &Path) -> std::io::Result<String> {
+    let token = random_hex(16)?;
     write_private(&home.join(".token"), &token)?;
     Ok(token)
 }
@@ -145,10 +153,11 @@ fn cmd_new_token(home: &Path, restart: bool) {
         eprintln!("Could not write new token: {e}");
         std::process::exit(1);
     }
-    println!("New pairing token generated. Phones paired with the old token are disconnected.");
+    devices::clear(home);
+    println!("New QR code made and all paired phones forgotten. Every phone must scan the QR code again.");
     if restart {
         cmd_service(Action::Restart);
-        println!("Open https://localhost:{}/ and scan the new QR code with each phone.", port());
+        println!("Open http://localhost:{}/ and scan the new QR code with each phone.", port());
     }
 }
 
@@ -189,11 +198,11 @@ fn wait_for(up: bool) -> bool {
 /// Is the auto-start service installed? (Without it, start/stop have nothing to control.)
 fn service_installed() -> bool {
     if cfg!(target_os = "macos") {
-        std::env::var("HOME").is_ok_and(|h| Path::new(&h).join("Library/LaunchAgents/com.barcodebridge.plist").exists())
+        std::env::var("HOME").is_ok_and(|h| Path::new(&h).join("Library/LaunchAgents/com.scan2cursor.plist").exists())
     } else if cfg!(windows) {
-        sh("schtasks", &["/Query", "/TN", "BarcodeBridge"])
+        sh("schtasks", &["/Query", "/TN", "Scan2Cursor"])
     } else {
-        std::env::var("HOME").is_ok_and(|h| Path::new(&h).join(".config/systemd/user/barcode-bridge.service").exists())
+        std::env::var("HOME").is_ok_and(|h| Path::new(&h).join(".config/systemd/user/scan2cursor.service").exists())
     }
 }
 
@@ -204,8 +213,8 @@ fn service(action: Action) -> bool {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
-        let target = format!("gui/{uid}/com.barcodebridge");
-        let plist = format!("{}/Library/LaunchAgents/com.barcodebridge.plist", std::env::var("HOME").unwrap_or_default());
+        let target = format!("gui/{uid}/com.scan2cursor");
+        let plist = format!("{}/Library/LaunchAgents/com.scan2cursor.plist", std::env::var("HOME").unwrap_or_default());
         // Stop = unload (launchd would otherwise restart it). It loads again at next login or on start.
         let loaded = || sh("launchctl", &["print", &target]);
         match action {
@@ -217,9 +226,9 @@ fn service(action: Action) -> bool {
         }
     } else if cfg!(windows) {
         let ps = match action {
-            Action::Start => "Start-ScheduledTask -TaskName BarcodeBridge",
-            Action::Stop => "Stop-ScheduledTask -TaskName BarcodeBridge",
-            Action::Restart => "Stop-ScheduledTask -TaskName BarcodeBridge; Start-ScheduledTask -TaskName BarcodeBridge",
+            Action::Start => "Start-ScheduledTask -TaskName Scan2Cursor",
+            Action::Stop => "Stop-ScheduledTask -TaskName Scan2Cursor",
+            Action::Restart => "Stop-ScheduledTask -TaskName Scan2Cursor; Start-ScheduledTask -TaskName Scan2Cursor",
         };
         sh("powershell", &["-NoProfile", "-Command", ps])
     } else {
@@ -228,14 +237,14 @@ fn service(action: Action) -> bool {
             Action::Stop => "stop",
             Action::Restart => "restart",
         };
-        sh("systemctl", &["--user", verb, "barcode-bridge"])
+        sh("systemctl", &["--user", verb, "scan2cursor"])
     }
 }
 
 fn cmd_service(action: Action) {
     if !service_installed() {
         eprintln!("Auto-start is not installed. Run scripts/install.sh (macOS/Linux) or scripts\\install.bat (Windows),");
-        eprintln!("or run the server in this terminal with: barcode-bridge run");
+        eprintln!("or run the server in this terminal with: scan2cursor run");
         std::process::exit(1);
     }
     let ok = service(action) && wait_for(action != Action::Stop);
@@ -247,22 +256,22 @@ fn cmd_service(action: Action) {
     if ok {
         println!("Server {what}.");
         if action == Action::Stop {
-            println!("It starts again at next login, or with: barcode-bridge start");
+            println!("It starts again at next login, or with: scan2cursor start");
         }
     } else {
-        eprintln!("Could not confirm the server {what}. See logs/barcode-bridge.log, or run 'barcode-bridge run' to see errors.");
+        eprintln!("Could not confirm the server {what}. See logs/scan2cursor.log, or run 'scan2cursor run' to see errors.");
         std::process::exit(1);
     }
 }
 
 fn cmd_status(home: &Path) {
     let up = server_answering();
-    println!("Server      : {}", if up { "running" } else { "NOT running (start it: barcode-bridge start)" });
+    println!("Server      : {}", if up { "running" } else { "NOT running (start it: scan2cursor start)" });
     println!("Auto-start  : {}", if service_installed() { "installed (starts at login)" } else { "not installed (run the installer)" });
-    println!("Desktop page: https://localhost:{}/", port());
+    println!("Desktop page: http://localhost:{}/", port());
     println!("LAN address : {}", lan_ip());
     println!("Internet    : {}", tunnel_summary(home));
-    println!("Log file    : {}", home.join("logs").join("barcode-bridge.log").display());
+    println!("Log file    : {}", home.join("logs").join("scan2cursor.log").display());
     if !up {
         std::process::exit(1);
     }
@@ -270,7 +279,7 @@ fn cmd_status(home: &Path) {
 
 fn tunnel_summary(home: &Path) -> String {
     match (tunnel::enabled(home), tunnel::current_url(home)) {
-        (false, _) => "off (phones on other networks: barcode-bridge tunnel on)".into(),
+        (false, _) => "off (phones on other networks: scan2cursor tunnel on)".into(),
         (true, Some(url)) => format!("on, {url}"),
         (true, None) => "on, connecting (or server not running)".into(),
     }
@@ -281,7 +290,7 @@ fn cmd_tunnel(home: &Path, arg: Option<&str>) {
         if service_installed() {
             cmd_service(Action::Restart);
         } else {
-            println!("Start the server to apply: barcode-bridge run");
+            println!("Start the server to apply: scan2cursor run");
         }
     };
     match arg {
@@ -306,8 +315,8 @@ fn cmd_tunnel(home: &Path, arg: Option<&str>) {
                     tunnel::current_url(home)
                 });
                 match url {
-                    Some(u) => println!("Ready: {u}\nOpen https://localhost:{}/ and scan the \"From anywhere\" QR code.", port()),
-                    None => println!("Still connecting. Check logs/barcode-bridge.log, or run: barcode-bridge tunnel status"),
+                    Some(u) => println!("Ready: {u}\nOpen http://localhost:{}/ and scan the \"From anywhere\" QR code.", port()),
+                    None => println!("Still connecting. Check logs/scan2cursor.log, or run: scan2cursor tunnel status"),
                 }
             }
             println!("Note: the address changes whenever the server restarts; phones then re-scan the QR code.");
@@ -322,13 +331,13 @@ fn cmd_tunnel(home: &Path, arg: Option<&str>) {
         }
         None | Some("status") => println!("Internet tunnel: {}", tunnel_summary(home)),
         Some(_) => {
-            eprintln!("Usage: barcode-bridge tunnel on | off | status");
+            eprintln!("Usage: scan2cursor tunnel on | off | status");
             std::process::exit(2);
         }
     }
 }
 
-const USAGE: &str = "Usage: barcode-bridge <command>
+const USAGE: &str = "Usage: scan2cursor <command>
   run                       run the server in this terminal (Ctrl+C to stop)
   start | stop | restart    control the auto-start background server
   status                    is it running? shows page address, internet address and log file
@@ -418,7 +427,7 @@ fn start_typer(press_enter: bool, dry_run: bool, log: Logger, ready: Arc<AtomicB
                 Err(e) if !reported => {
                     reported = true;
                     log.log(&format!(
-                        "keyboard not available: {e} (macOS: switch on Barcode Bridge in System Settings > Privacy & Security > Accessibility)"
+                        "keyboard not available: {e} (macOS: switch on Scan2Cursor in System Settings > Privacy & Security > Accessibility)"
                     ));
                 }
                 Err(_) => {}
@@ -476,6 +485,7 @@ struct Peer {
     since: i64, // ms since epoch
     scans: u64,
     last_scan: Option<i64>,
+    device: Option<String>, // id of the paired phone (devices.rs); None for pages
 }
 
 fn now_ms() -> i64 {
@@ -506,10 +516,21 @@ fn clean_name(raw: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
-struct App {
+/// What a new phone needs to pair: the token in the QR code, and the tunnel address if there is one.
+struct Pairing {
     token: String,
-    pair_json: Mutex<serde_json::Value>, // changes when the tunnel address arrives
-    peers: Mutex<HashMap<u64, Peer>>,
+    tunnel_url: Option<String>,
+}
+
+struct App {
+    home: PathBuf,
+    log: Logger,
+    lan_base: String, // https://<lan-ip>:<port>
+    tunnel_enabled: bool,
+    pairing: Mutex<Pairing>,
+    pair_json: Mutex<serde_json::Value>, // what /api/pair returns; rebuilt when `pairing` changes
+    devices: Mutex<devices::Store>,      // paired phones and their keys
+    peers: Mutex<HashMap<u64, Peer>>,    // open connections
     next_id: AtomicU64,
     typer: std_mpsc::Sender<String>,
     typer_ready: Arc<AtomicBool>, // false while the OS does not let us type (macOS Accessibility)
@@ -523,15 +544,63 @@ fn qr_data_url(text: &str) -> String {
 }
 
 impl App {
-    /// New (or lost) internet address: update the pairing info and tell open pairing pages to reload it.
-    fn set_tunnel_url(&self, url: Option<String>) {
-        let scanner = url.map(|u| format!("{u}/scanner.html?t={}", self.token));
-        {
-            let mut p = self.pair_json.lock().unwrap();
-            p["tunnel"]["url"] = scanner.clone().into();
-            p["tunnel"]["qr"] = scanner.as_deref().map(qr_data_url).into();
-        }
+    fn token_ok(&self, given: Option<&String>) -> bool {
+        given.is_some_and(|t| same_secret(t, &self.pairing.lock().unwrap().token))
+    }
+
+    /// Rebuild the pairing info (links + QR codes) and tell open pairing pages to reload it.
+    fn refresh_pairing(&self) {
+        let json = {
+            let p = self.pairing.lock().unwrap();
+            let lan = format!("{}/scanner.html?t={}", self.lan_base, p.token);
+            let net = p.tunnel_url.as_ref().map(|u| format!("{u}/scanner.html?t={}", p.token));
+            serde_json::json!({
+                "token": p.token, "url": lan, "qr": qr_data_url(&lan),
+                "tunnel": { "enabled": self.tunnel_enabled, "url": net, "qr": net.as_deref().map(qr_data_url) },
+            })
+        };
+        *self.pair_json.lock().unwrap() = json;
         self.send_to(&[Role::Monitor], r#"{"type":"pair"}"#);
+    }
+
+    /// New (or lost) internet address.
+    fn set_tunnel_url(&self, url: Option<String>) {
+        self.pairing.lock().unwrap().tunnel_url = url;
+        self.refresh_pairing();
+    }
+
+    /// Take away one phone's access: forget its key, disconnect it, and change the QR code's token
+    /// so the link it already has cannot pair it again. Other phones keep their own keys.
+    fn remove_device(&self, id: &str) {
+        let name = self.devices.lock().unwrap().get_mut(id).map(|d| d.name.clone());
+        if !self.devices.lock().unwrap().remove(id) {
+            return;
+        }
+        {
+            let mut peers = self.peers.lock().unwrap();
+            let open: Vec<u64> = peers.iter().filter(|(_, p)| p.device.as_deref() == Some(id)).map(|(k, _)| *k).collect();
+            for k in open {
+                // Dropped from the list right away, so nothing more from it is accepted.
+                if let Some(p) = peers.remove(&k) {
+                    let _ = p.tx.send(Message::Close(Some(CloseFrame { code: CLOSE_REMOVED, reason: "removed".into() })));
+                }
+            }
+        }
+        match generate_token(&self.home) {
+            Ok(t) => self.pairing.lock().unwrap().token = t,
+            Err(e) => self.log.log(&format!("could not change the pairing token: {e}")),
+        }
+        self.log.log(&format!("removed device {id} ({}); pairing token changed", name.unwrap_or_default()));
+        self.refresh_pairing();
+        self.broadcast_status();
+    }
+
+    /// Messages from the pairing page.
+    fn on_monitor(&self, raw: &str) {
+        let Ok(m) = serde_json::from_str::<serde_json::Value>(raw) else { return };
+        if let ("remove", Some(id)) = (m["type"].as_str().unwrap_or(""), m["id"].as_str()) {
+            self.remove_device(id);
+        }
     }
 
     fn send_to(&self, roles: &[Role], msg: &str) -> usize {
@@ -544,32 +613,43 @@ impl App {
     }
 
     fn broadcast_status(&self) {
-        let (phones, desktops, mut devices) = {
+        let paired = self.devices.lock().unwrap().list.clone();
+        let (phones, desktops, devices) = {
             let peers = self.peers.lock().unwrap();
             let count = |r| peers.values().filter(|p| p.role == r).count();
-            let devices: Vec<_> = peers
+            // Every paired phone, connected or not, then the web pages connected right now.
+            let mut devices: Vec<_> = paired
                 .iter()
-                .filter(|(_, p)| p.role != Role::Monitor)
-                .map(|(id, p)| {
+                .map(|d| {
+                    let p = peers.values().filter(|p| p.device.as_deref() == Some(&d.id)).max_by_key(|p| p.since);
                     serde_json::json!({
-                        "id": id, "kind": if p.role == Role::Phone { "phone" } else { "web page" },
-                        "name": p.name, "ip": p.ip, "since": p.since, "scans": p.scans, "lastScan": p.last_scan,
+                        "id": d.id, "kind": "phone", "name": d.name, "online": p.is_some(), "removable": true,
+                        "ip": p.map(|p| &p.ip), "since": p.map(|p| p.since), "lastSeen": d.last_seen,
+                        "scans": p.map_or(0, |p| p.scans), "lastScan": p.and_then(|p| p.last_scan),
                     })
                 })
                 .collect();
+            devices.extend(peers.iter().filter(|(_, p)| p.role == Role::Desktop).map(|(id, p)| {
+                serde_json::json!({
+                    "id": format!("page-{id}"), "kind": "web page", "name": p.name, "online": true, "removable": false,
+                    "ip": p.ip, "since": p.since, "lastSeen": null, "scans": 0, "lastScan": null,
+                })
+            }));
             (count(Role::Phone), count(Role::Desktop), devices)
         };
-        devices.sort_by_key(|d| d["since"].as_i64());
         // The built-in typer counts as one desktop that types at the cursor, when the OS allows it.
         let typers = usize::from(self.typer_ready.load(Ordering::Relaxed));
         let mut msg = serde_json::json!({ "type": "status", "phones": phones, "desktops": desktops + typers, "typers": typers });
         self.send_to(&[Role::Phone, Role::Desktop], &msg.to_string());
-        // Only the pairing page gets the device list (names and IPs of everyone connected).
+        // Only the pairing page gets the device list (names and IPs of everyone paired).
         msg["devices"] = devices.into();
         self.send_to(&[Role::Monitor], &msg.to_string());
     }
 
     fn on_scan(&self, id: u64, raw: &str, reply: &mpsc::UnboundedSender<Message>) {
+        if !self.peers.lock().unwrap().contains_key(&id) {
+            return; // removed while still connected
+        }
         let Ok(m) = serde_json::from_str::<serde_json::Value>(raw) else { return };
         let Some(code) = m["code"].as_str() else { return };
         if m["type"] != "scan" || code.is_empty() || code.chars().count() > MAX_CODE_CHARS {
@@ -595,8 +675,8 @@ impl App {
 
 // ---------- HTTP handlers ----------
 
-fn asset(content_type: &'static str, body: &'static str) -> Response {
-    ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "no-cache")], body).into_response()
+fn asset(content_type: &'static str, body: impl Into<axum::body::Body>) -> Response {
+    ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "no-cache")], body.into()).into_response()
 }
 
 fn is_loopback(ip: IpAddr) -> bool {
@@ -628,12 +708,16 @@ async fn pair(
     Query(q): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let has_token = q.get("t").is_some_and(|t| same_secret(t, &app.token));
+    let has_token = app.token_ok(q.get("t"));
     if !is_local_request(peer, &headers) && !has_token {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "token required" }))).into_response();
     }
     Json(app.pair_json.lock().unwrap().clone()).into_response()
 }
+
+/// WebSocket close codes the phone page understands.
+const CLOSE_NOT_PAIRED: u16 = 4401; // unknown key and wrong/old QR token
+const CLOSE_REMOVED: u16 = 4403; // removed on the pairing page
 
 async fn ws(
     State(app): State<Arc<App>>,
@@ -642,16 +726,51 @@ async fn ws(
     headers: axum::http::HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    if !q.get("t").is_some_and(|t| same_secret(t, &app.token)) {
-        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
-    }
     let role = match q.get("role").map(String::as_str) {
         Some("phone") => Role::Phone,
         Some("monitor") => Role::Monitor,
         _ => Role::Desktop,
     };
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let name = q.get("name").and_then(|n| clean_name(n)).unwrap_or_else(|| device_label(ua));
+    let chosen_name = q.get("name").and_then(|n| clean_name(n));
+    let mut name = chosen_name.clone().unwrap_or_else(|| device_label(ua));
+    let token_ok = app.token_ok(q.get("t"));
+
+    // Phones log in with their own key. A phone without one pairs with the QR code's token and is
+    // given a key. Pages (pairing page, bridge.js) use the token.
+    let (mut device, mut new_key) = (None, None);
+    if role == Role::Phone {
+        let now = now_ms();
+        let mut store = app.devices.lock().unwrap();
+        let known = q.get("k").and_then(|k| store.by_key(k)).map(|d| {
+            d.last_seen = now;
+            if let Some(n) = &chosen_name {
+                d.name = n.clone();
+            }
+            d.clone()
+        });
+        if let Some(d) = known {
+            store.save();
+            name = d.name.clone();
+            device = Some(d.id);
+        } else if token_ok {
+            let Ok(d) = store.enroll(name.clone(), now) else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+            new_key = Some(d.key);
+            device = Some(d.id);
+        }
+        drop(store);
+        if device.is_none() {
+            // Accept, then close with a code, so the phone can tell "not paired" from "offline".
+            return upgrade.on_upgrade(|mut socket| async move {
+                let _ = socket.send(Message::Close(Some(CloseFrame { code: CLOSE_NOT_PAIRED, reason: "not paired".into() }))).await;
+            });
+        }
+    } else if !token_ok {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+
     let mut ip = match addr.ip() {
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(v6.to_string(), |v4| v4.to_string()),
         ip => ip.to_string(),
@@ -665,33 +784,44 @@ async fn ws(
     }
     upgrade
         .max_message_size(4096)
-        .on_upgrade(move |socket| client(app, socket, role, name, ip))
+        .on_upgrade(move |socket| client(app, socket, role, name, ip, device, new_key))
 }
 
-async fn client(app: Arc<App>, socket: WebSocket, role: Role, name: String, ip: String) {
+async fn client(app: Arc<App>, socket: WebSocket, role: Role, name: String, ip: String, device: Option<String>, new_key: Option<String>) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
     let id = app.next_id.fetch_add(1, Ordering::Relaxed);
-    // Tell the device the name it is listed under, so the phone can show it.
-    let _ = tx.send(Message::Text(serde_json::json!({ "type": "hello", "name": name }).to_string().into()));
-    let peer = Peer { role, tx: tx.clone(), name, ip, since: now_ms(), scans: 0, last_scan: None };
+    // Tell the phone the name it is listed under and, when it was just paired, its key to keep.
+    let _ = tx.send(Message::Text(serde_json::json!({ "type": "hello", "name": name, "key": new_key }).to_string().into()));
+    let peer = Peer { role, tx: tx.clone(), name, ip, since: now_ms(), scans: 0, last_scan: None, device: device.clone() };
     app.peers.lock().unwrap().insert(id, peer);
     app.broadcast_status();
 
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
-            if sink.send(m).await.is_err() {
+            let closing = matches!(m, Message::Close(_));
+            if sink.send(m).await.is_err() || closing {
                 break;
             }
         }
     });
     while let Some(Ok(msg)) = stream.next().await {
-        if let (Role::Phone, Message::Text(t)) = (role, &msg) {
-            app.on_scan(id, t.as_str(), &tx);
+        let Message::Text(t) = &msg else { continue };
+        match role {
+            Role::Phone => app.on_scan(id, t.as_str(), &tx),
+            Role::Monitor => app.on_monitor(t.as_str()),
+            Role::Desktop => {}
         }
     }
     app.peers.lock().unwrap().remove(&id);
     writer.abort();
+    if let Some(dev) = device {
+        let mut store = app.devices.lock().unwrap();
+        if let Some(d) = store.get_mut(&dev) {
+            d.last_seen = now_ms();
+            store.save();
+        }
+    }
     app.broadcast_status();
 }
 
@@ -716,7 +846,7 @@ fn main() {
     }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
     if let Err(e) = rt.block_on(serve(home)) {
-        eprintln!("barcode-bridge failed: {e}");
+        eprintln!("scan2cursor failed: {e}");
         std::process::exit(1);
     }
 }
@@ -732,22 +862,22 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let (cert_pem, key_pem) = load_cert(&home, &host)?;
     let acceptor = tls_acceptor(&cert_pem, &key_pem)?;
 
-    let scanner_url = format!("https://{host}:{port}/scanner.html?t={token}");
     let tunnel_on = tunnel::enabled(&home);
-    let pair_json = serde_json::json!({
-        "token": token, "url": scanner_url, "qr": qr_data_url(&scanner_url),
-        "tunnel": { "enabled": tunnel_on, "url": null, "qr": null },
-    });
-
     let typer_ready = Arc::new(AtomicBool::new(false));
     let app = Arc::new(App {
-        pair_json: Mutex::new(pair_json),
-        token,
+        home: home.clone(),
+        log: log.clone(),
+        lan_base: format!("https://{host}:{port}"),
+        tunnel_enabled: tunnel_on,
+        pairing: Mutex::new(Pairing { token, tunnel_url: None }),
+        pair_json: Mutex::new(serde_json::Value::Null),
+        devices: Mutex::new(devices::Store::load(&home)),
         peers: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(0),
         typer: start_typer(press_enter, dry_run, log.clone(), typer_ready.clone()),
         typer_ready: typer_ready.clone(),
     });
+    app.refresh_pairing();
 
     // Tell open pages when typing starts or stops working (e.g. the permission was switched on).
     {
@@ -771,12 +901,14 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         .route("/scanner.html", get(|| async { asset("text/html; charset=utf-8", SCANNER_HTML) }))
         .route("/bridge.js", get(|| async { asset("text/javascript; charset=utf-8", BRIDGE_JS) }))
         .route("/vendor/html5-qrcode.js", get(|| async { asset("text/javascript; charset=utf-8", HTML5_QRCODE_JS) }))
+        .route("/logo.svg", get(|| async { asset("image/svg+xml", LOGO_SVG) }))
+        .route("/icon-180.png", get(|| async { asset("image/png", ICON_PNG) }))
         .route("/api/pair", get(pair))
         .route("/ws", get(ws))
         .with_state(app.clone());
 
     let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-    println!("\nDesktop page : https://localhost:{port}/");
+    println!("\nDesktop page : http://localhost:{port}/");
     println!("Phone URL    : https://{host}:{port}/scanner.html?t=<token>  (scan the QR on the desktop page)");
     println!("Phone must be on the same Wi-Fi{}.\n", if tunnel_on { ", or use the internet QR code" } else { "" });
     log.log(&format!("listening on port {port}, LAN address {host}, tunnel {}", if tunnel_on { "on" } else { "off" }));
@@ -786,21 +918,31 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(tunnel::run(home, port, log, move |url| app.set_tunnel_url(url)));
     }
 
+    // Plain HTTP from another device is only ever answered with a redirect to HTTPS.
+    let to_https = Router::new().fallback(|headers: axum::http::HeaderMap, uri: axum::http::Uri| async move {
+        let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("localhost");
+        axum::response::Redirect::temporary(&format!("https://{host}{uri}"))
+    });
+
     let accept_loop = async {
         loop {
             let Ok((tcp, peer)) = listener.accept().await else { continue };
             let _ = tcp.set_nodelay(true); // send each scan immediately, no Nagle batching
-            let (acceptor, router) = (acceptor.clone(), router.clone());
+            let (acceptor, router, to_https) = (acceptor.clone(), router.clone(), to_https.clone());
             tokio::spawn(async move {
-                let Ok(Ok(tls)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else { return };
-                let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
-                    req.extensions_mut().insert(ConnectInfo(peer));
-                    router.clone().oneshot(req)
-                });
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(TokioIo::new(tls), svc)
-                    .with_upgrades()
-                    .await;
+                // One port, two protocols: a TLS handshake starts with byte 0x16, plain HTTP with a letter.
+                let mut first = [0u8; 1];
+                let Ok(Ok(1)) = tokio::time::timeout(Duration::from_secs(10), tcp.peek(&mut first)).await else { return };
+                if first[0] == 0x16 {
+                    let Ok(Ok(tls)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else { return };
+                    serve_conn(tls, router, peer).await;
+                } else if is_loopback(peer.ip()) {
+                    // Plain HTTP only for this computer: http://localhost needs no certificate, so the
+                    // desktop page opens without a browser warning, and nothing crosses the network.
+                    serve_conn(tcp, router, peer).await;
+                } else {
+                    serve_conn(tcp, to_https, peer).await; // never send the token over the network unencrypted
+                }
             });
         }
     };
@@ -811,6 +953,21 @@ async fn serve(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     }
     tunnel::clear_state(&home);
     Ok(())
+}
+
+/// Serve one connection (TLS or plain) with the given router.
+async fn serve_conn<IO>(io: IO, router: Router, peer: SocketAddr)
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+        req.extensions_mut().insert(ConnectInfo(peer));
+        router.clone().oneshot(req)
+    });
+    let _ = hyper::server::conn::http1::Builder::new()
+        .serve_connection(TokioIo::new(io), svc)
+        .with_upgrades()
+        .await;
 }
 
 async fn shutdown_signal() {

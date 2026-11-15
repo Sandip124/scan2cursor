@@ -1,4 +1,4 @@
-# Barcode bridge — user guide
+# Scan2Cursor — user guide
 
 Your phone becomes a barcode scanner for your computer. Scan a barcode on the phone and it is typed,
 followed by Enter, wherever the cursor is on the computer: a billing app, a spreadsheet, a web form.
@@ -19,54 +19,79 @@ followed by Enter, wherever the cursor is on the computer: a billing app, a spre
 
 The installer:
 
-1. builds the program if Rust is installed, otherwise uses the `barcode-bridge` (or
-   `barcode-bridge.exe`) file already in this folder,
+1. builds the program if Rust is installed, otherwise uses the `scan2cursor` (or
+   `scan2cursor.exe`) file already in this folder,
 2. creates a new pairing token for this computer,
 3. sets the server to start automatically when you log in,
-4. opens the pairing page `https://localhost:8443/`.
+4. opens the pairing page `http://localhost:8443/`.
 
-**macOS only:** when asked, switch on **Barcode Bridge** in **System Settings → Privacy & Security →
+**macOS only:** when asked, switch on **Scan2Cursor** in **System Settings → Privacy & Security →
 Accessibility**. Without this it cannot type. If it is not listed, click **+** and choose
-`BarcodeBridge.app` in this folder. The pairing page shows "Typing at cursor: ready" once it works;
-no restart is needed.
+`Scan2Cursor.app` in this folder. Until it is allowed, the pairing page shows a red warning; the
+warning disappears by itself once it works. No restart is needed.
 
 **Windows only:** if a firewall prompt appears, click **Allow** for private networks.
 
 ## 2. Pair a phone
 
-1. On the computer, open `https://localhost:8443/`.
+1. On the computer, open `http://localhost:8443/`.
 2. Scan the QR code on that page with the phone's camera and open the link.
-3. The first time, the phone warns that the connection is not private. This is expected: the
-   certificate is made by this computer, not bought from a company. Choose *Advanced → Proceed*
-   (Android) or *Show details → visit this website* (iPhone).
+3. On the **Same Wi-Fi** code, the phone warns once that the connection is not private. This is
+   expected: the certificate is made by this computer. Choose *Advanced → Proceed* (Android) or
+   *Show details → visit this website* (iPhone). See [Certificate warning](#certificate-warning).
 4. Tap **SCAN**, point at a barcode. A beep means it was typed on the computer.
 
 Tip: add the page to the phone's home screen to open it like an app next time.
 
 ### Several phones
 
-Each phone scans the same QR code. The pairing page lists every connected device with its address,
-how long it has been connected, and how many scans it sent.
+Each phone scans the same QR code. The pairing page lists every paired phone: connected ones with
+their address and scan count, and offline ones with when they were last seen.
 
 To tell phones apart, tap the name in the top-right corner of the scanner page on the phone (e.g.
 "iPhone · Safari") and type a name such as "Counter 2". The phone remembers it.
 
+### Remove a phone
+
+Click **Remove** next to a phone on the pairing page, for example a phone that is no longer used
+or belongs to someone who left.
+
+- That phone is disconnected at once and can no longer scan.
+- The QR code changes, so the link that phone already has cannot pair it again.
+- Your other phones keep working. They do not need to scan again.
+
+To use a removed phone again, scan the new QR code with it.
+
+How it works: the QR code only *pairs* a phone. When a phone pairs, the computer gives it its own
+key, which the phone keeps. Removing a phone deletes its key. To remove **all** phones at once, run
+`./scan2cursor new-token`.
+
+### Certificate warning
+
+- **On this computer:** none. Open the pairing page as `http://localhost:8443/`. Browsers treat
+  `localhost` as secure, and the page never leaves this computer.
+- **On the phone, "From anywhere" code:** none. It uses a normal certificate from Cloudflare.
+- **On the phone, "Same Wi-Fi" code:** once per phone. The phone's camera only works over HTTPS,
+  and no certificate authority issues certificates for a home network address like
+  `192.168.x.x`, so the computer makes its own. Accepting it once is safe on your own Wi-Fi. If
+  the computer's address changes, the phone asks again; a fixed address in the router avoids that.
+
 ## 3. Everyday commands
 
-Run these from this folder. On Windows use `barcode-bridge.exe` instead of `./barcode-bridge`.
+Run these from this folder. On Windows use `scan2cursor.exe` instead of `./scan2cursor`.
 
 | Command | What it does |
 |---|---|
-| `./barcode-bridge status` | Is it running? Shows the page address, network address and log file |
-| `./barcode-bridge start` | Start the background server |
-| `./barcode-bridge stop` | Stop it. It starts again at next login, or with `start` |
-| `./barcode-bridge restart` | Stop and start again (try this first when something is wrong) |
-| `./barcode-bridge tunnel on` | Let phones on other networks connect (see [Different networks](#different-networks)) |
-| `./barcode-bridge tunnel off` | Same Wi-Fi only again |
-| `./barcode-bridge tunnel status` | Is the tunnel on, and its current internet address |
-| `./barcode-bridge new-token` | New pairing token; every phone must scan the QR code again |
-| `./barcode-bridge run` | Run in this terminal instead of the background (shows errors; Ctrl+C stops) |
-| `./barcode-bridge help` | List the commands |
+| `./scan2cursor status` | Is it running? Shows the page address, network address and log file |
+| `./scan2cursor start` | Start the background server |
+| `./scan2cursor stop` | Stop it. It starts again at next login, or with `start` |
+| `./scan2cursor restart` | Stop and start again (try this first when something is wrong) |
+| `./scan2cursor tunnel on` | Let phones on other networks connect (see [Different networks](#different-networks)) |
+| `./scan2cursor tunnel off` | Same Wi-Fi only again |
+| `./scan2cursor tunnel status` | Is the tunnel on, and its current internet address |
+| `./scan2cursor new-token` | Start over: new QR code and all paired phones forgotten; every phone scans again |
+| `./scan2cursor run` | Run in this terminal instead of the background (shows errors; Ctrl+C stops) |
+| `./scan2cursor help` | List the commands |
 
 The server starts by itself at login and restarts itself if it crashes, so normally you never need
 these.
@@ -82,22 +107,23 @@ settings ("DHCP reservation").
 
 | Problem | Fix |
 |---|---|
-| Pairing page does not open | `./barcode-bridge status`; if not running, `./barcode-bridge start`. Still failing: `./barcode-bridge run` shows the error |
+| Pairing page does not open | `./scan2cursor status`; if not running, `./scan2cursor start`. Still failing: `./scan2cursor run` shows the error |
 | `address already in use` | Another program uses port 8443. Stop it, or see [Options](#6-options) |
 | Phone says "offline" or cannot open the link | Phone on the same Wi-Fi as the computer? Not a *guest* network (those block devices from seeing each other)? Windows: firewall allowed? |
-| Page says "Typing at cursor: not allowed", phone says "not typed" (macOS) | Switch on **Barcode Bridge** under Accessibility (see Install). If it is on but still not working, see [macOS keeps asking](#macos-keeps-asking-for-accessibility) |
+| Page shows a red "Scans cannot be typed yet" warning, phone says "not typed" (macOS) | Switch on **Scan2Cursor** under Accessibility (see Install). If it is on but still not working, see [macOS keeps asking](#macos-keeps-asking-for-accessibility) |
 | Typed into the wrong window | It types wherever the cursor is. Click into the right field first |
 | Phone shows "desktop not connected" | The server restarted; wait a second, it reconnects by itself |
-| Internet QR code stuck on "Connecting…" | Computer online? `./barcode-bridge tunnel status`; see the log. Some office networks block Cloudflare Tunnel |
+| Internet QR code stuck on "Connecting…" | Computer online? `./scan2cursor tunnel status`; see the log. Some office networks block Cloudflare Tunnel |
 | Internet link stopped working | The address changes when the server restarts. Scan the new "From anywhere" QR code |
-| Someone else may have the link | `./barcode-bridge new-token`, then pair your phones again |
+| A phone should no longer have access | Click **Remove** next to it on the pairing page |
+| Someone else may have the link | `./scan2cursor new-token`, then pair your phones again |
 
-Problems are written to `logs/barcode-bridge.log`.
+Problems are written to `logs/scan2cursor.log`.
 
 ### macOS keeps asking for Accessibility
 
 macOS remembers the permission by the app's identity. On a Mac the program is therefore packaged
-as `BarcodeBridge.app` (app ID `com.barcodebridge`) and signed with a local certificate, "Barcode
+as `Scan2Cursor.app` (app ID `com.scan2cursor`) and signed with a local certificate, "Barcode
 Bridge Local Signing", made once in your login keychain. The identity stays the same across
 updates, so the permission is kept.
 
@@ -105,12 +131,12 @@ If the entry is switched on but typing still does not work, the entry is stale (
 older build). Start fresh:
 
 ```
-tccutil reset Accessibility com.barcodebridge
-./barcode-bridge restart
+tccutil reset Accessibility com.scan2cursor
+./scan2cursor restart
 ```
 
-macOS asks again; switch on **Barcode Bridge**. An old entry named `barcode-bridge` (from before
-the app packaging) can be removed from the list with **−**; it is no longer used.
+macOS asks again; switch on **Scan2Cursor**. Entries named `barcode-bridge` or **Barcode Bridge**
+(the app's earlier name) are no longer used; remove them from the list with **−**.
 
 ### Updating after a code change
 
@@ -122,9 +148,10 @@ but it makes a new token.)
 
 | File | What it is |
 |---|---|
-| `barcode-bridge` / `barcode-bridge.exe` | The program (on a Mac: a link into `BarcodeBridge.app`) |
-| `BarcodeBridge.app` | macOS only: the program packaged as an app, so the Accessibility permission sticks |
-| `.token` | Pairing secret. Anyone with it can type on this computer. Do not share or commit |
+| `scan2cursor` / `scan2cursor.exe` | The program (on a Mac: a link into `Scan2Cursor.app`) |
+| `Scan2Cursor.app` | macOS only: the program packaged as an app, so the Accessibility permission sticks |
+| `.token` | Pairing secret (in the QR code). Anyone with it can pair and type on this computer. Do not share or commit |
+| `.devices.json` | Paired phones and their keys. Do not share or commit |
 | `.cert.json` | HTTPS certificate and private key for this computer. Do not share or commit |
 | `logs/` | Log files (rolled over at 1 MB) |
 | `settings.json` | Saved settings (tunnel on/off) |
@@ -135,7 +162,7 @@ but it makes a new token.)
 
 ## 6. Options
 
-Set as environment variables before `./barcode-bridge run` (or in the auto-start entry):
+Set as environment variables before `./scan2cursor run` (or in the auto-start entry):
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -158,7 +185,7 @@ install on the phone and no router settings.
 ### Turn it on
 
 ```
-./barcode-bridge tunnel on
+./scan2cursor tunnel on
 ```
 
 The first time, this downloads Cloudflare's small `cloudflared` program into `bin/` (from
@@ -169,7 +196,7 @@ Then that one is used. The server restarts and gets an address like
 The pairing page now shows a second QR code, **From anywhere**. Scan it with a phone on any network.
 It uses a normal certificate, so there is no "not private" warning.
 
-Turn it off again with `./barcode-bridge tunnel off`.
+Turn it off again with `./scan2cursor tunnel off`.
 
 ### How it works
 
@@ -186,7 +213,7 @@ internet.
 
 ### Know before you use it
 
-- **The address changes whenever the server restarts** (reboot, `restart`, `new-token`). Phones
+- **The address changes whenever the server restarts** (reboot, `restart`, `new-token`, update). Phones
   then need to scan the new **From anywhere** code. This is how Cloudflare's free, account-less
   "quick tunnel" works. A fixed address needs a free Cloudflare account and your own domain (not
   built in yet).
@@ -195,7 +222,7 @@ internet.
 - **Quick tunnels have no uptime guarantee.** Cloudflare offers them free, for testing and light
   use. If it fails, phones on the same Wi-Fi keep working.
 - **The address is public, but useless without the token.** Anyone who opens it without the
-  token's link is refused. If a link leaked, run `./barcode-bridge new-token`.
+  token's link is refused. If a link leaked, run `./scan2cursor new-token`.
 
 ### Without the tunnel
 
