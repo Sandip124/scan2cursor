@@ -1,0 +1,13 @@
+logs/
+target/
+bin/
+/barcode-bridge
+/barcode-bridge.exe
+.token
+.cert.json
+.tunnel.json
+settings.json
+/.barcode-bridge.new
+/barcode-bridge.new
+/BarcodeBridge.app/
+/.barcode-bridge.build
